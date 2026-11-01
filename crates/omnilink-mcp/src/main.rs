@@ -1,6 +1,30 @@
 use std::io::{self, BufRead, Write};
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+#[derive(Parser, Debug, Clone)]
+#[command(
+    name = "omnilink-mcp",
+    about = "OmniLink Model Context Protocol (MCP) Server - Autonomous Push Notification Gateway"
+)]
+struct Args {
+    /// Relay notification endpoint URL
+    #[arg(
+        long,
+        default_value = "https://relay.findbeatradar.com/v1/notify",
+        env = "OMNILINK_NOTIFY_URL"
+    )]
+    notify_url: String,
+
+    /// Default notification channel / topic
+    #[arg(
+        long,
+        default_value = "default",
+        env = "OMNILINK_CHANNEL"
+    )]
+    channel: String,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonRpcRequest {
@@ -20,7 +44,13 @@ struct JsonRpcResponse {
     error: Option<Value>,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -48,7 +78,7 @@ fn main() -> anyhow::Result<()> {
             }
         };
 
-        let response = handle_request(req);
+        let response = handle_request(req, &http_client, &args).await;
         let resp_json = serde_json::to_string(&response)?;
         writeln!(stdout, "{}", resp_json)?;
         stdout.flush()?;
@@ -57,7 +87,11 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_request(req: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_request(
+    req: JsonRpcRequest,
+    client: &reqwest::Client,
+    args: &Args,
+) -> JsonRpcResponse {
     let id = req.id;
 
     match req.method.as_str() {
@@ -88,21 +122,22 @@ fn handle_request(req: JsonRpcRequest) -> JsonRpcResponse {
             result: Some(json!({
                 "tools": [
                     {
-                        "name": "notify_mobile",
-                        "description": "Send a push notification or high-priority alert to the user's mobile device via PCTunnel",
+                        "name": "notify_user",
+                        "description": "Send a push notification or high-priority alert directly to the user's mobile device via OmniLink Push Hub. Works 24/7 without requiring an active terminal tunnel session.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
                                 "title": { "type": "string", "description": "Title of the alert" },
                                 "message": { "type": "string", "description": "Body content of the notification" },
-                                "priority": { "type": "string", "enum": ["low", "normal", "urgent"], "default": "normal" }
+                                "priority": { "type": "string", "enum": ["low", "normal", "urgent"], "default": "normal" },
+                                "channel": { "type": "string", "description": "Optional custom channel/device token (defaults to configured channel)" }
                             },
                             "required": ["title", "message"]
                         }
                     },
                     {
-                        "name": "get_tunnel_status",
-                        "description": "Inspect the status of the active PCTunnel terminal connection",
+                        "name": "get_service_status",
+                        "description": "Inspect the status of the OmniLink Relay and Push Notification Hub",
                         "inputSchema": {
                             "type": "object",
                             "properties": {}
@@ -118,10 +153,80 @@ fn handle_request(req: JsonRpcRequest) -> JsonRpcResponse {
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             match tool_name {
-                "notify_mobile" => {
-                    let title = arguments.get("title").and_then(|v| v.as_str()).unwrap_or("PCTunnel Alert");
+                "notify_user" => {
+                    let title = arguments.get("title").and_then(|v| v.as_str()).unwrap_or("OmniLink Alert");
                     let message = arguments.get("message").and_then(|v| v.as_str()).unwrap_or("");
                     let priority = arguments.get("priority").and_then(|v| v.as_str()).unwrap_or("normal");
+                    let channel = arguments
+                        .get("channel")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&args.channel);
+
+                    let payload = json!({
+                        "channel": channel,
+                        "title": title,
+                        "message": message,
+                        "priority": priority
+                    });
+
+                    match client.post(&args.notify_url).json(&payload).send().await {
+                        Ok(res) if res.status().is_success() => {
+                            let body = res.text().await.unwrap_or_default();
+                            JsonRpcResponse {
+                                jsonrpc: "2.0".into(),
+                                id,
+                                result: Some(json!({
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": format!("✅ Push notification successfully delivered to OmniLink Hub:\nTitle: {}\nMessage: {}\nPriority: {}\nChannel: {}\nHub Response: {}", title, message, priority, channel, body)
+                                        }
+                                    ]
+                                })),
+                                error: None,
+                            }
+                        }
+                        Ok(res) => {
+                            JsonRpcResponse {
+                                jsonrpc: "2.0".into(),
+                                id,
+                                result: Some(json!({
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": format!("⚠️ Notification sent but relay returned status {}: check channel configuration.", res.status())
+                                        }
+                                    ]
+                                })),
+                                error: None,
+                            }
+                        }
+                        Err(e) => {
+                            JsonRpcResponse {
+                                jsonrpc: "2.0".into(),
+                                id,
+                                result: Some(json!({
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": format!("❌ Failed to connect to OmniLink Push Hub at {}: {:?}", args.notify_url, e)
+                                        }
+                                    ]
+                                })),
+                                error: None,
+                            }
+                        }
+                    }
+                }
+                "get_service_status" => {
+                    let health_url = "https://relay.findbeatradar.com/health";
+                    let status_text = match client.get(health_url).send().await {
+                        Ok(r) if r.status().is_success() => {
+                            let text = r.text().await.unwrap_or_default();
+                            format!("OmniLink Relay Status: ONLINE (HTTPS Active)\nEndpoint: {}\nHealth: {}", health_url, text)
+                        }
+                        _ => "OmniLink Relay Status: UNREACHABLE or OFFLINE".to_string(),
+                    };
 
                     JsonRpcResponse {
                         jsonrpc: "2.0".into(),
@@ -130,22 +235,7 @@ fn handle_request(req: JsonRpcRequest) -> JsonRpcResponse {
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": format!("Notification dispatched to mobile device: [{}] {} (Priority: {})", title, message, priority)
-                                }
-                            ]
-                        })),
-                        error: None,
-                    }
-                }
-                "get_tunnel_status" => {
-                    JsonRpcResponse {
-                        jsonrpc: "2.0".into(),
-                        id,
-                        result: Some(json!({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "OmniLink Host Status: ACTIVE\nRelay: wss://relay.findbeatradar.com\nSecurity: E2EE Noise/ChaCha20Poly1305\nProcess Isolation: Win32 ConPTY (Standard User)"
+                                    "text": status_text
                                 }
                             ]
                         })),

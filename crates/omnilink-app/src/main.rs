@@ -33,10 +33,6 @@ struct Args {
     /// Custom Room UUID (leave empty to generate randomly)
     #[arg(long)]
     room: Option<String>,
-
-    /// Direct SSH helper mode: print local SSH connection string
-    #[arg(long)]
-    direct_ssh: bool,
 }
 
 fn detect_best_shell() -> String {
@@ -144,11 +140,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mSecurity     :\x1b[0m \x1b[38;2;16;185;129mChaCha20-Poly1305 + X25519 (Proof-Gated)\x1b[0m");
     println!("  \x1b[38;2;148;163;184m╰────────────────────────────────────────────────────────────────────╯\x1b[0m");
 
-    println!("\n  \x1b[1;38;2;0;242;254m[ 2. DIRECT SSH (Local LAN / WiFi) ]\x1b[0m");
-    println!("  If your PC has OpenSSH enabled on your local network:");
-    println!("  \x1b[1;38;2;241;245;249m  ssh {}@{}\x1b[0m (Port 22)\n", get_current_user(), local_ip);
-
-    println!("  \x1b[38;2;239;68;68m[KILLSWITCH]\x1b[0m Type \x1b[1;38;2;255;255;255m'q'\x1b[0m or press \x1b[1;38;2;255;255;255mCtrl+C\x1b[0m to instantly terminate session.");
+    println!("\n  \x1b[38;2;239;68;68m[KILLSWITCH]\x1b[0m Type \x1b[1;38;2;255;255;255m'q'\x1b[0m or press \x1b[1;38;2;255;255;255mCtrl+C\x1b[0m to instantly terminate session.");
     println!("  Waiting for authorized peer handshake...\n");
 
     let (session, killswitch) = TunnelHostSession::new(

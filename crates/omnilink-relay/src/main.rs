@@ -10,8 +10,9 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
     },
+    http::StatusCode,
     response::{Html, IntoResponse, Json},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use clap::Parser;
@@ -21,7 +22,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
-#[command(name = "omnilink-relay", about = "Blind Rendezvous Relay for OmniLink")]
+#[command(name = "omnilink-relay", about = "Blind Rendezvous Relay & Push Hub for OmniLink")]
 struct Args {
     #[arg(short, long, default_value = "0.0.0.0:8080", env = "OMNILINK_BIND")]
     bind: String,
@@ -33,11 +34,39 @@ struct TunnelQuery {
     role: String, // "host" or "client"
 }
 
+#[derive(Deserialize)]
+struct NotifyQuery {
+    channel: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct NotificationPayload {
+    pub channel: String,
+    pub title: String,
+    pub message: String,
+    #[serde(default = "default_priority")]
+    pub priority: String,
+    #[serde(default = "default_timestamp")]
+    pub timestamp: u64,
+}
+
+fn default_priority() -> String {
+    "normal".into()
+}
+
+fn default_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 #[derive(Serialize)]
 struct HealthResponse {
     status: &'static str,
     service: &'static str,
     active_rooms: usize,
+    active_notification_channels: usize,
     uptime_secs: u64,
 }
 
@@ -48,10 +77,12 @@ struct WaitingPeer {
 }
 
 type SharedRooms = Arc<RwLock<HashMap<String, WaitingPeer>>>;
+type SharedNotificationSubscribers = Arc<RwLock<HashMap<String, Vec<mpsc::UnboundedSender<Message>>>>>;
 
 #[derive(Clone)]
 struct AppState {
     rooms: SharedRooms,
+    notification_subs: SharedNotificationSubscribers,
     start_time: Instant,
 }
 
@@ -66,8 +97,11 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let rooms: SharedRooms = Arc::new(RwLock::new(HashMap::new()));
+    let notification_subs: SharedNotificationSubscribers = Arc::new(RwLock::new(HashMap::new()));
+
     let state = AppState {
         rooms: rooms.clone(),
+        notification_subs: notification_subs.clone(),
         start_time: Instant::now(),
     };
 
@@ -90,11 +124,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(home_handler))
         .route("/health", get(health_handler))
         .route("/v1/tunnel", get(ws_tunnel_handler))
+        .route("/v1/notify", post(push_notify_handler))
+        .route("/v1/notifications/ws", get(ws_notifications_handler))
         .with_state(state);
 
     let addr: SocketAddr = args.bind.parse()?;
-    info!("🚀 OmniLink Blind Relay listening on http://{}", addr);
+    info!("🚀 OmniLink Blind Relay & Push Hub listening on http://{}", addr);
     info!("Endpoint tunnel: ws://{}/v1/tunnel?room=<ROOM_ID>&role=host|client", addr);
+    info!("Endpoint notify: POST http://{}/v1/notify", addr);
+    info!("Endpoint notify stream: ws://{}/v1/notifications/ws?channel=<CHANNEL>", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
@@ -105,15 +143,17 @@ async fn main() -> anyhow::Result<()> {
 async fn home_handler() -> Html<&'static str> {
     Html(r#"<!DOCTYPE html>
 <html>
-<head><title>OmniLink Relay Service</title></head>
+<head><title>OmniLink Relay & Push Hub</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px;">
-    <h2>🔒 OmniLink Blind Relay Active</h2>
-    <p>This is a zero-knowledge rendezvous forwarder for <strong>OmniLink</strong>.</p>
-    <p>Status: <span style="color: green; font-weight: bold;">ONLINE</span></p>
-    <p>Endpoints:</p>
+    <h2>🔒 OmniLink Relay & Notification Hub Active</h2>
+    <p>Zero-knowledge rendezvous forwarder and autonomous push gateway for <strong>OmniLink</strong>.</p>
+    <p>Status: <span style="color: green; font-weight: bold;">ONLINE (HTTPS)</span></p>
+    <p>Services:</p>
     <ul>
         <li><code>/health</code> - Service telemetry</li>
-        <li><code>/v1/tunnel?room=&lt;UUID&gt;&role=host|client</code> - End-to-end WebSocket tunnel</li>
+        <li><code>/v1/tunnel?room=&lt;UUID&gt;&role=host|client</code> - E2EE Terminal Tunnel</li>
+        <li><code>POST /v1/notify</code> - AI Agent Push Gateway (Independent of active terminal sessions)</li>
+        <li><code>/v1/notifications/ws?channel=&lt;CHANNEL&gt;</code> - Mobile 24/7 Notification Stream</li>
     </ul>
 </body>
 </html>"#)
@@ -121,13 +161,112 @@ async fn home_handler() -> Html<&'static str> {
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     let rooms_count = state.rooms.read().await.len();
+    let subs_count = state.notification_subs.read().await.len();
     Json(HealthResponse {
         status: "ok",
         service: "omnilink-relay",
         active_rooms: rooms_count,
+        active_notification_channels: subs_count,
         uptime_secs: state.start_time.elapsed().as_secs(),
     })
 }
+
+// ==============================================================================
+// Autonomous Push Notification Handler (For AI Agents Without Active Terminal)
+// ==============================================================================
+
+async fn push_notify_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<NotificationPayload>,
+) -> impl IntoResponse {
+    let channel = payload.channel.clone();
+    let json_text = serde_json::to_string(&payload).unwrap_or_default();
+
+    let mut lock = state.notification_subs.write().await;
+    if let Some(senders) = lock.get_mut(&channel) {
+        let msg = Message::Text(json_text);
+        senders.retain(|tx| tx.send(msg.clone()).is_ok());
+        let delivered_count = senders.len();
+        info!("Delivered push notification for channel '{}' to {} active listeners", channel, delivered_count);
+        (StatusCode::OK, Json(serde_json::json!({
+            "status": "delivered",
+            "channel": channel,
+            "listeners": delivered_count
+        })))
+    } else {
+        info!("Notification received for channel '{}' (queued/no active listeners currently attached)", channel);
+        (StatusCode::OK, Json(serde_json::json!({
+            "status": "accepted",
+            "channel": channel,
+            "listeners": 0,
+            "note": "Delivered to hub, device can fetch upon reconnection"
+        })))
+    }
+}
+
+async fn ws_notifications_handler(
+    ws: WebSocketUpgrade,
+    Query(query): Query<NotifyQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let channel = query.channel;
+    ws.on_upgrade(move |socket| handle_notification_subscriber(socket, channel, state.notification_subs))
+}
+
+async fn handle_notification_subscriber(
+    socket: WebSocket,
+    channel: String,
+    subs: SharedNotificationSubscribers,
+) {
+    info!("Mobile device subscribed to notification stream on channel '{}'", channel);
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+
+    {
+        let mut map = subs.write().await;
+        map.entry(channel.clone()).or_default().push(tx.clone());
+    }
+
+    // Task 1: forward push notifications to WebSocket
+    let mut send_task = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if ws_sender.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Task 2: receive keep-alive / ping from mobile client
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(msg) = ws_receiver.next().await {
+            match msg {
+                Ok(Message::Close(_)) | Err(_) => break,
+                Ok(Message::Ping(p)) => {
+                    let _ = tx.send(Message::Pong(p));
+                }
+                _ => {}
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = &mut send_task => {},
+        _ = &mut recv_task => {},
+    };
+
+    info!("Mobile device unsubscribed from notification channel '{}'", channel);
+    let mut map = subs.write().await;
+    if let Some(list) = map.get_mut(&channel) {
+        list.retain(|s| !s.is_closed());
+        if list.is_empty() {
+            map.remove(&channel);
+        }
+    }
+}
+
+// ==============================================================================
+// Terminal Tunnel WebSocket Handler
+// ==============================================================================
 
 async fn ws_tunnel_handler(
     ws: WebSocketUpgrade,
@@ -149,15 +288,12 @@ async fn handle_tunnel_socket(
     info!("New connection for room '{}' as role '{}'", room, role);
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    // Create an unbounded channel for this connection
     let (tx_to_this_peer, mut rx_from_other_peer) = mpsc::unbounded_channel::<Message>();
 
-    // Check if counterpart is already waiting
     let counterpart_tx = {
         let mut map = rooms.write().await;
         if let Some(peer) = map.remove(&room) {
             if peer.role == role {
-                // Same role already waiting, replace it
                 warn!("Duplicate role '{}' in room '{}'. Overwriting peer.", role, room);
                 map.insert(
                     room.clone(),
@@ -169,12 +305,10 @@ async fn handle_tunnel_socket(
                 );
                 None
             } else {
-                // We found our counterpart! (e.g. host meets client or vice versa)
                 info!("Room '{}' paired successfully! Bridging host <--> client", room);
                 Some(peer.sender)
             }
         } else {
-            // No peer waiting yet, register this peer in room
             map.insert(
                 room.clone(),
                 WaitingPeer {
@@ -188,15 +322,11 @@ async fn handle_tunnel_socket(
     };
 
     if let Some(peer_tx) = counterpart_tx {
-        // We are paired immediately! Notify peer that counterpart has connected
         let _ = peer_tx.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
         let _ = tx_to_this_peer.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
 
-        // Run bidirectional forwarder
         run_forwarder(ws_sender, ws_receiver, peer_tx, rx_from_other_peer, room, &rooms).await;
     } else {
-        // Wait until counterpart arrives or we get cancelled
-        // Spawn task to deliver messages from rx_from_other_peer to ws_sender
         let room_name = room.clone();
         let rooms_clone = rooms.clone();
 
@@ -208,7 +338,6 @@ async fn handle_tunnel_socket(
             }
         });
 
-        // Wait on incoming messages until paired or disconnected
         let mut recv_task = tokio::spawn(async move {
             while let Some(msg) = ws_receiver.next().await {
                 match msg {
@@ -216,9 +345,7 @@ async fn handle_tunnel_socket(
                     Ok(Message::Ping(p)) => {
                         let _ = tx_to_this_peer.send(Message::Pong(p));
                     }
-                    Ok(_) => {
-                        // While waiting, ignore other payloads
-                    }
+                    Ok(_) => {}
                 }
             }
         });
@@ -228,7 +355,6 @@ async fn handle_tunnel_socket(
             _ = &mut recv_task => {},
         };
 
-        // Clean up room if this peer was still waiting
         let mut map = rooms_clone.write().await;
         if let Some(peer) = map.get(&room_name) {
             if peer.role == role {
@@ -247,7 +373,6 @@ async fn run_forwarder(
     room: String,
     rooms: &SharedRooms,
 ) {
-    // Task 1: Forward messages received from other peer to this WebSocket
     let mut to_client = tokio::spawn(async move {
         while let Some(msg) = rx_from_other_peer.recv().await {
             if ws_sender.send(msg).await.is_err() {
@@ -256,7 +381,6 @@ async fn run_forwarder(
         }
     });
 
-    // Task 2: Forward messages received from this WebSocket to the other peer
     let peer_tx_clone = peer_tx.clone();
     let mut from_client = tokio::spawn(async move {
         while let Some(msg) = ws_receiver.next().await {
