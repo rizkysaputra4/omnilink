@@ -22,6 +22,16 @@ impl KeyPair {
     pub fn public_bytes(&self) -> [u8; 32] {
         *self.public.as_bytes()
     }
+
+    pub fn public_hex(&self) -> String {
+        hex::encode(self.public_bytes())
+    }
+
+    pub fn from_secret_bytes(bytes: [u8; 32]) -> Self {
+        let secret = StaticSecret::from(bytes);
+        let public = PublicKey::from(&secret);
+        Self { secret, public }
+    }
 }
 
 pub struct SessionEncryptor {

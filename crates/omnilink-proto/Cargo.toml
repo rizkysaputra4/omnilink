@@ -19,3 +19,4 @@ hmac = "0.12"
 subtle.workspace = true
 uuid.workspace = true
 base64 = "0.22"
+hex = "0.4"

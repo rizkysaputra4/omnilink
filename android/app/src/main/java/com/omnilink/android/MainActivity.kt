@@ -108,7 +108,9 @@ class MainActivity : ComponentActivity() {
     fun AppScreen() {
         val context = LocalContext.current
         val coroutineScope = rememberCoroutineScope()
+        val prefs = remember { context.getSharedPreferences("omnilink_prefs", Context.MODE_PRIVATE) }
 
+        var savedPairingJson by remember { mutableStateOf(prefs.getString("saved_pairing", null)) }
         var status by remember { mutableStateOf("Ready to connect") }
         var isConnected by remember { mutableStateOf(false) }
         var manualInput by remember { mutableStateOf("") }
@@ -138,6 +140,11 @@ class MainActivity : ComponentActivity() {
                 tunnelClient?.disconnect()
                 terminalOutput.clear()
                 status = "Connecting to relay..."
+
+                // Persist pairing so the user NEVER needs to scan again
+                val jsonStr = Gson().toJson(data)
+                prefs.edit().putString("saved_pairing", jsonStr).apply()
+                savedPairingJson = jsonStr
 
                 tunnelClient = TunnelWebSocketClient(
                     relayUrl = data.relay,
@@ -170,6 +177,17 @@ class MainActivity : ComponentActivity() {
                 connectZeroTrust(parsed)
             } else {
                 Toast.makeText(context, "Invalid pairing payload format!", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // Auto-connect on app launch if already paired!
+        LaunchedEffect(Unit) {
+            val saved = prefs.getString("saved_pairing", null)
+            if (!saved.isNullOrBlank()) {
+                val data = Gson().fromJson(saved, PairingData::class.java)
+                if (data != null && data.room.isNotBlank()) {
+                    connectZeroTrust(data)
+                }
             }
         }
 
@@ -213,6 +231,13 @@ class MainActivity : ComponentActivity() {
             tunnelClient = null
             isConnected = false
             status = "Disconnected"
+        }
+
+        val forgetSavedPairing = {
+            disconnectAll()
+            prefs.edit().remove("saved_pairing").apply()
+            savedPairingJson = null
+            status = "Ready to connect"
         }
 
         // QR Scanner Camera Dialog
@@ -264,192 +289,37 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        if (isConnected) {
-                            Button(
-                                onClick = { disconnectAll() },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                            ) {
-                                Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("KILL", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (savedPairingJson != null && !isConnected) {
+                                IconButton(
+                                    onClick = { forgetSavedPairing() },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.QrCode, contentDescription = "New Pair", tint = Color(0xFF94A3B8))
+                                }
+                            }
+
+                            if (isConnected) {
+                                Button(
+                                    onClick = { disconnectAll() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("STOP", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
                 }
             }
         ) { padding ->
-            if (!isConnected) {
-                // Modern Setup & Pairing Screen
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                        .padding(horizontal = 20.dp, vertical = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(1.dp, Color(0xFF262B3A), RoundedCornerShape(20.dp)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF12141D)),
-                        shape = RoundedCornerShape(20.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            // Interactive QR Scanner Card / Trigger Button
-                            Box(
-                                modifier = Modifier
-                                    .size(72.dp)
-                                    .clip(RoundedCornerShape(20.dp))
-                                    .background(Brush.linearGradient(listOf(Color(0xFF00F2FE), Color(0xFF4FACFE))))
-                                    .clickable { openScanner() },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Default.QrCodeScanner,
-                                    contentDescription = "Scan QR",
-                                    tint = Color.Black,
-                                    modifier = Modifier.size(36.dp)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            Text(
-                                "Connect to PC",
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-
-                            Text(
-                                "Zero-Trust End-to-End Encrypted Terminal. Tap below to scan the QR code displayed on your PC screen.",
-                                fontSize = 12.sp,
-                                color = Color(0xFF94A3B8),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                modifier = Modifier.padding(top = 6.dp, bottom = 20.dp)
-                            )
-
-                            // Big Primary Action: In-App Camera QR Scanner
-                            Button(
-                                onClick = { openScanner() },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(52.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00F2FE))
-                            ) {
-                                Icon(
-                                    Icons.Default.CameraAlt,
-                                    contentDescription = "Camera",
-                                    tint = Color.Black,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    "SCAN PC SCREEN QR",
-                                    color = Color.Black,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // Secondary Quick Action: Paste from Clipboard
-                            OutlinedButton(
-                                onClick = {
-                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    val clip = cm.primaryClip
-                                    if (clip != null && clip.itemCount > 0) {
-                                        val text = clip.getItemAt(0).text?.toString() ?: ""
-                                        if (text.isNotBlank()) {
-                                            manualInput = text
-                                            handleRawPayload(text)
-                                        } else {
-                                            Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
-                                        }
-                                    } else {
-                                        Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(44.dp),
-                                shape = RoundedCornerShape(10.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF262B3A)),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF94A3B8))
-                            ) {
-                                Icon(Icons.Default.ContentPaste, contentDescription = "Paste", modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Paste from Clipboard", fontSize = 13.sp)
-                            }
-
-                            Spacer(modifier = Modifier.height(20.dp))
-
-                            // Divider
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                HorizontalDivider(modifier = Modifier.weight(1f), color = Color(0xFF1E2230))
-                                Text(
-                                    "  OR PASTE MANUALLY  ",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF64748B),
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                HorizontalDivider(modifier = Modifier.weight(1f), color = Color(0xFF1E2230))
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            OutlinedTextField(
-                                value = manualInput,
-                                onValueChange = { manualInput = it },
-                                label = { Text("Pairing URL, Base64 or JSON") },
-                                placeholder = { Text("https://relay... or {\"relay\":...}") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                shape = RoundedCornerShape(10.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF00F2FE),
-                                    unfocusedBorderColor = Color(0xFF262B3A),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White,
-                                    focusedLabelColor = Color(0xFF00F2FE),
-                                    unfocusedLabelColor = Color(0xFF64748B)
-                                )
-                            )
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            Button(
-                                onClick = {
-                                    if (manualInput.isNotBlank()) {
-                                        handleRawPayload(manualInput)
-                                    } else {
-                                        Toast.makeText(context, "Please scan QR or paste pairing data first", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(44.dp),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                            ) {
-                                Text("Connect With Text", color = Color(0xFFF1F5F9), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Modern Minimalist Terminal View
+            if (isConnected) {
+                // ==========================================================
+                // Active Terminal View
+                // ==========================================================
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -561,6 +431,261 @@ class MainActivity : ComponentActivity() {
                                 .size(46.dp)
                         ) {
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.Black)
+                        }
+                    }
+                }
+            } else if (savedPairingJson != null) {
+                // ==========================================================
+                // Paired Waiting View (Automatic Reconnection Screen)
+                // ==========================================================
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, Color(0xFF262B3A), RoundedCornerShape(20.dp)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF12141D)),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(68.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF1E2230)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Computer,
+                                    contentDescription = "Paired PC",
+                                    tint = Color(0xFF00F2FE),
+                                    modifier = Modifier.size(36.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                "Paired PC",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+
+                            Text(
+                                status,
+                                fontSize = 13.sp,
+                                color = if (status.contains("Connecting")) Color(0xFF00F2FE) else Color(0xFF94A3B8),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                modifier = Modifier.padding(top = 8.dp, bottom = 24.dp)
+                            )
+
+                            Button(
+                                onClick = {
+                                    val data = Gson().fromJson(savedPairingJson, PairingData::class.java)
+                                    if (data != null) connectZeroTrust(data)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00F2FE))
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Retry", tint = Color.Black)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("RECONNECT NOW", color = Color.Black, fontWeight = FontWeight.Bold)
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedButton(
+                                onClick = { forgetSavedPairing() },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF262B3A)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF94A3B8))
+                            ) {
+                                Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan New", modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Pair Another PC (Scan QR)", fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+            } else {
+                // ==========================================================
+                // First-Time Setup & Pairing Screen
+                // ==========================================================
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, Color(0xFF262B3A), RoundedCornerShape(20.dp)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF12141D)),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(Brush.linearGradient(listOf(Color(0xFF00F2FE), Color(0xFF4FACFE))))
+                                    .clickable { openScanner() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.QrCodeScanner,
+                                    contentDescription = "Scan QR",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                "Connect to PC",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+
+                            Text(
+                                "Zero-Trust End-to-End Encrypted Terminal. Tap below to scan the QR code displayed on your PC app.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF94A3B8),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                modifier = Modifier.padding(top = 6.dp, bottom = 20.dp)
+                            )
+
+                            Button(
+                                onClick = { openScanner() },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00F2FE))
+                            ) {
+                                Icon(
+                                    Icons.Default.CameraAlt,
+                                    contentDescription = "Camera",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    "SCAN PC SCREEN QR",
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            OutlinedButton(
+                                onClick = {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = cm.primaryClip
+                                    if (clip != null && clip.itemCount > 0) {
+                                        val text = clip.getItemAt(0).text?.toString() ?: ""
+                                        if (text.isNotBlank()) {
+                                            manualInput = text
+                                            handleRawPayload(text)
+                                        } else {
+                                            Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
+                                        Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF262B3A)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF94A3B8))
+                            ) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = "Paste", modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Paste from Clipboard", fontSize = 13.sp)
+                            }
+
+                            Spacer(modifier = Modifier.height(20.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                HorizontalDivider(modifier = Modifier.weight(1f), color = Color(0xFF1E2230))
+                                Text(
+                                    "  OR PASTE MANUALLY  ",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF64748B),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                HorizontalDivider(modifier = Modifier.weight(1f), color = Color(0xFF1E2230))
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            OutlinedTextField(
+                                value = manualInput,
+                                onValueChange = { manualInput = it },
+                                label = { Text("Pairing URL, Base64 or JSON") },
+                                placeholder = { Text("https://relay... or {\"relay\":...}") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF00F2FE),
+                                    unfocusedBorderColor = Color(0xFF262B3A),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White,
+                                    focusedLabelColor = Color(0xFF00F2FE),
+                                    unfocusedLabelColor = Color(0xFF64748B)
+                                )
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Button(
+                                onClick = {
+                                    if (manualInput.isNotBlank()) {
+                                        handleRawPayload(manualInput)
+                                    } else {
+                                        Toast.makeText(context, "Please scan QR or paste pairing data first", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
+                            ) {
+                                Text("Connect With Text", color = Color(0xFFF1F5F9), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            }
                         }
                     }
                 }
@@ -685,7 +810,7 @@ fun QrScannerDialog(
 
                 // Bottom Hint
                 Text(
-                    "Point at the QR code displayed on your PC terminal",
+                    "Point at the QR code displayed on your PC app",
                     color = Color(0xFF94A3B8),
                     fontSize = 12.sp,
                     modifier = Modifier.padding(bottom = 32.dp)
