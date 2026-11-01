@@ -7,11 +7,14 @@ import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 class TunnelWebSocketClient(
     private val relayUrl: String,
     private val roomId: String,
     private val hostPubHex: String,
+    private val authTokenHex: String,
     private val onOutputReceived: (String) -> Unit,
     private val onStatusChanged: (String) -> Unit
 ) {
@@ -35,7 +38,7 @@ class TunnelWebSocketClient(
 
             override fun onMessage(ws: WebSocket, text: String) {
                 if (text == "PCTUNNEL_PEER_CONNECTED") {
-                    onStatusChanged("Host PC connected. Performing E2EE handshake...")
+                    onStatusChanged("Host PC connected. Performing E2EE handshake & Proof...")
                     sendHandshakeInit(ws)
                 }
             }
@@ -56,8 +59,19 @@ class TunnelWebSocketClient(
 
     private fun sendHandshakeInit(ws: WebSocket) {
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".toByteArray(Charsets.UTF_8)
-        val payload = ByteBuffer.allocate(32 + 2 + deviceName.size)
+        val authTokenBytes = hexStringToByteArray(authTokenHex)
+
+        // Compute HMAC-SHA256 proof of possession of the QR secret
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(authTokenBytes, "HmacSHA256"))
+        mac.update(crypto.publicKeyBytes)
+        mac.update(deviceName)
+        val authProof = mac.doFinal()
+
+        // Payload format: [pub (32)][proof (32)][id_len (2)][id (N)]
+        val payload = ByteBuffer.allocate(32 + 32 + 2 + deviceName.size)
         payload.put(crypto.publicKeyBytes)
+        payload.put(authProof)
         payload.putShort(deviceName.size.toShort())
         payload.put(deviceName)
 
@@ -67,9 +81,15 @@ class TunnelWebSocketClient(
 
     private fun handleIncomingBytes(raw: ByteArray) {
         if (!isPaired) {
-            // Handshake Response is unencrypted
+            // Handshake Response is [type: 0x02][len: 4][hostPub: 32][status: 1]
             if (raw.size >= 5 && raw[0] == 0x02.toByte()) {
-                val len = ByteBuffer.wrap(raw, 1, 4).int
+                val status = raw[raw.size - 1].toInt()
+                if (status != 0) {
+                    onStatusChanged("🛑 Authentication Failed! PC rejected connection.")
+                    disconnect()
+                    return
+                }
+
                 val hostPub = ByteArray(32)
                 System.arraycopy(raw, 5, hostPub, 0, 32)
                 crypto.completeHandshake(hostPub)
@@ -125,7 +145,7 @@ class TunnelWebSocketClient(
             val encrypted = crypto.encrypt(frame)
             ws.send(encrypted.toByteString())
         } catch (e: Exception) {
-            // Log or notify
+            // Error handling
         }
     }
 
@@ -144,6 +164,18 @@ class TunnelWebSocketClient(
         } catch (_: Exception) {}
         webSocket?.close(1000, "Disconnect requested")
         webSocket = null
+        isPaired = false
         onStatusChanged("Disconnected")
+    }
+
+    private fun hexStringToByteArray(s: String): ByteArray {
+        val len = s.length
+        val data = ByteArray(len / 2)
+        var i = 0
+        while (i < len) {
+            data[i / 2] = ((Character.digit(s[i], 16) shl 4) + Character.digit(s[i + 1], 16)).toByte()
+            i += 2
+        }
+        return data
     }
 }

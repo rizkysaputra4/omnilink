@@ -9,7 +9,9 @@ pub struct PairingPayload {
     pub room: String,
     /// Host's X25519 public key in hex
     pub host_pub: String,
-    /// 6-digit one-time PIN for initial authorization
+    /// 256-bit cryptographically secure one-time authorization token in hex
+    pub auth_token: String,
+    /// 6-digit one-time PIN for secondary visual confirmation
     pub pin: String,
 }
 

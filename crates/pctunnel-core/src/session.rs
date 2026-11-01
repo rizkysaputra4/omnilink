@@ -1,21 +1,71 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use pctunnel_proto::{Frame, KeyPair, SessionCrypto};
+use pctunnel_proto::{verify_auth_proof, Frame, KeyPair, SessionCrypto};
+use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{error, info, warn};
 
 #[cfg(windows)]
 use crate::conpty::win::PseudoConsole;
 
+#[derive(Serialize, Deserialize, Default)]
+pub struct DeviceWhitelist {
+    pub authorized_keys: Vec<AuthorizedDevice>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AuthorizedDevice {
+    pub name: String,
+    pub public_key_hex: String,
+    pub authorized_at: String,
+}
+
+impl DeviceWhitelist {
+    pub fn load() -> Self {
+        if let Some(path) = Self::file_path() {
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(data) = serde_json::from_str::<Self>(&content) {
+                        return data;
+                    }
+                }
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save(&self) -> Result<()> {
+        if let Some(path) = Self::file_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let data = serde_json::to_string_pretty(self)?;
+            std::fs::write(path, data)?;
+        }
+        Ok(())
+    }
+
+    fn file_path() -> Option<PathBuf> {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .ok()?;
+        Some(PathBuf::from(home).join(".pctunnel").join("authorized_devices.json"))
+    }
+}
+
 pub struct TunnelHostSession {
     pub relay_url: String,
     pub room_id: String,
     pub host_key: Arc<KeyPair>,
+    pub auth_token: [u8; 32],
     pub pin: String,
     pub shell: String,
     pub killswitch: Arc<AtomicBool>,
@@ -26,6 +76,7 @@ impl TunnelHostSession {
         relay_url: String,
         room_id: String,
         host_key: Arc<KeyPair>,
+        auth_token: [u8; 32],
         pin: String,
         shell: String,
     ) -> (Self, Arc<AtomicBool>) {
@@ -34,6 +85,7 @@ impl TunnelHostSession {
             relay_url,
             room_id,
             host_key,
+            auth_token,
             pin,
             shell,
             killswitch: killswitch.clone(),
@@ -49,7 +101,7 @@ impl TunnelHostSession {
             .await
             .context("Failed to connect to relay WebSocket")?;
 
-        info!("Connected to relay. Waiting for mobile device to scan QR code and connect...");
+        info!("Connected to relay. Waiting for authorized mobile device...");
 
         let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
@@ -60,7 +112,7 @@ impl TunnelHostSession {
             }
             match msg_res {
                 Ok(Message::Text(t)) if t == "PCTUNNEL_PEER_CONNECTED" => {
-                    info!("Mobile peer connected to room! Initiating E2EE handshake...");
+                    info!("Incoming peer connection to room! Awaiting cryptographic proof of authorization...");
                     break;
                 }
                 Ok(Message::Ping(p)) => {
@@ -76,8 +128,7 @@ impl TunnelHostSession {
             }
         }
 
-        // 2. Perform E2EE Handshake
-        // Receive HandshakeInit
+        // 2. Perform E2EE Handshake & Cryptographic Proof Verification
         let init_msg = ws_receiver
             .next()
             .await
@@ -89,14 +140,35 @@ impl TunnelHostSession {
         };
 
         let init_frame = Frame::decode(&raw_bytes)?;
-        let (client_ephemeral_pub, client_id) = match init_frame {
-            Frame::HandshakeInit { client_ephemeral_pub, client_id } => {
-                (client_ephemeral_pub, client_id)
-            }
+        let (client_ephemeral_pub, client_id, auth_proof) = match init_frame {
+            Frame::HandshakeInit {
+                client_ephemeral_pub,
+                client_id,
+                auth_proof,
+            } => (client_ephemeral_pub, client_id, auth_proof),
             other => bail!("Expected HandshakeInit frame, got {:?}", other),
         };
 
-        info!("Received E2EE HandshakeInit from client device: '{}'", client_id);
+        // CRITICAL SECURITY CHECK: Verify cryptographic proof of possession of the QR secret
+        let is_valid_token = verify_auth_proof(
+            &self.auth_token,
+            &client_ephemeral_pub,
+            &client_id,
+            &auth_proof,
+        );
+
+        if !is_valid_token {
+            warn!("🛑 ROGUE CONNECTION ATTEMPT REJECTED! Client '{}' failed cryptographic authentication proof.", client_id);
+            let resp_frame = Frame::HandshakeResponse {
+                host_ephemeral_pub: [0u8; 32],
+                status: 1, // Status 1 = Authentication Failed
+            };
+            let _ = ws_sender.send(Message::Binary(resp_frame.encode())).await;
+            let _ = ws_sender.send(Message::Close(None)).await;
+            bail!("Unauthorized peer connection rejected (invalid auth token proof)");
+        }
+
+        info!("🛡️ Cryptographic Auth Proof VERIFIED for device '{}'!", client_id);
 
         // Derive shared secret with client's public key
         let client_pub = x25519_dalek::PublicKey::from(client_ephemeral_pub);
@@ -104,7 +176,20 @@ impl TunnelHostSession {
         let crypto = SessionCrypto::from_shared_secret(shared_secret.as_bytes(), true);
         let (mut encryptor, mut decryptor) = crypto.split();
 
-        // Send HandshakeResponse
+        // Record authorized device
+        let mut whitelist = DeviceWhitelist::load();
+        let client_pub_hex = hex::encode(client_ephemeral_pub);
+        if !whitelist.authorized_keys.iter().any(|d| d.public_key_hex == client_pub_hex) {
+            whitelist.authorized_keys.push(AuthorizedDevice {
+                name: client_id.clone(),
+                public_key_hex: client_pub_hex,
+                authorized_at: chrono_now_string(),
+            });
+            let _ = whitelist.save();
+            info!("Registered new authorized device: '{}'", client_id);
+        }
+
+        // Send HandshakeResponse (Status 0 = Success)
         let resp_frame = Frame::HandshakeResponse {
             host_ephemeral_pub: self.host_key.public_bytes(),
             status: 0,
@@ -114,7 +199,7 @@ impl TunnelHostSession {
             .await
             .context("Failed to send HandshakeResponse")?;
 
-        info!("🔒 E2EE Handshake complete! Terminal session established (AES-GCM / ChaCha20-Poly1305).");
+        info!("🔒 E2EE Session active! Connected device: '{}'", client_id);
 
         #[cfg(windows)]
         {
@@ -152,7 +237,6 @@ impl TunnelHostSession {
             // WebSocket Send Task
             let mut send_task = tokio::spawn(async move {
                 while let Some(raw_frame) = outbound_rx.recv().await {
-                    // Encrypt frame
                     match encryptor.encrypt(&raw_frame) {
                         Ok(encrypted) => {
                             if ws_sender.send(Message::Binary(encrypted)).await.is_err() {
@@ -178,7 +262,6 @@ impl TunnelHostSession {
                     }
                     match msg_res {
                         Ok(Message::Binary(ciphertext)) => {
-                            // Decrypt frame
                             match decryptor.decrypt(&ciphertext) {
                                 Ok(plaintext) => match Frame::decode(&plaintext) {
                                     Ok(Frame::TerminalInput(data)) => {
@@ -230,4 +313,13 @@ impl TunnelHostSession {
 
         Ok(())
     }
+}
+
+fn chrono_now_string() -> String {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("Unix: {}", now)
 }

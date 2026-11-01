@@ -2,8 +2,8 @@ pub mod crypto;
 pub mod frames;
 pub mod pairing;
 
-pub use crypto::{KeyPair, SessionCrypto};
-pub use frames::{Frame, FrameType};
+pub use crypto::{KeyPair, SessionCrypto, SessionDecryptor, SessionEncryptor};
+pub use frames::{compute_auth_proof, verify_auth_proof, Frame, FrameType};
 pub use pairing::PairingPayload;
 
 #[cfg(test)]
@@ -21,6 +21,20 @@ mod tests {
         let encoded = input_frame.encode();
         let decoded = Frame::decode(&encoded).expect("decode terminal input");
         assert_eq!(input_frame, decoded);
+
+        let auth_token = [42u8; 32];
+        let client_pub = [7u8; 32];
+        let proof = compute_auth_proof(&auth_token, &client_pub, "Pixel 8 Pro");
+        assert!(verify_auth_proof(&auth_token, &client_pub, "Pixel 8 Pro", &proof));
+
+        let handshake_frame = Frame::HandshakeInit {
+            client_ephemeral_pub: client_pub,
+            client_id: "Pixel 8 Pro".into(),
+            auth_proof: proof,
+        };
+        let encoded = handshake_frame.encode();
+        let decoded = Frame::decode(&encoded).expect("decode handshake init");
+        assert_eq!(handshake_frame, decoded);
     }
 
     #[test]

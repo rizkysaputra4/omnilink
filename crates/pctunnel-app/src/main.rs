@@ -7,13 +7,14 @@ use clap::Parser;
 use pctunnel_core::TunnelHostSession;
 use pctunnel_proto::{KeyPair, PairingPayload};
 use qrcode::{render::unicode, QrCode};
+use rand::RngCore;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "pctunnel-app",
-    about = "PCTunnel Windows Host Agent with ConPTY & Zero-Trust E2EE"
+    about = "PCTunnel Windows Host - Modern Minimalist Zero-Trust Terminal Bridge"
 )]
 struct Args {
     /// Relay WebSocket URL
@@ -25,17 +26,20 @@ struct Args {
     )]
     relay: String,
 
-    /// Shell executable to launch (e.g. powershell.exe, cmd.exe, bash.exe)
+    /// Shell executable to launch (e.g. powershell.exe, pwsh.exe, cmd.exe, bash.exe)
     #[arg(short, long, env = "PCTUNNEL_SHELL")]
     shell: Option<String>,
 
     /// Custom Room UUID (leave empty to generate randomly)
     #[arg(long)]
     room: Option<String>,
+
+    /// Direct SSH helper mode: print local SSH connection string
+    #[arg(long)]
+    direct_ssh: bool,
 }
 
 fn detect_best_shell() -> String {
-    // Priority: pwsh.exe (PowerShell 7+) -> powershell.exe -> cmd.exe
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
     let default_powershell = format!("{}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", system_root);
 
@@ -60,6 +64,23 @@ fn which(exe_name: &str) -> Result<String, ()> {
     Err(())
 }
 
+fn get_local_ip() -> String {
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = socket.local_addr() {
+                return addr.ip().to_string();
+            }
+        }
+    }
+    "127.0.0.1".into()
+}
+
+fn get_current_user() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "user".into())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -74,6 +95,12 @@ async fn main() -> anyhow::Result<()> {
     let room_id = args.room.unwrap_or_else(|| Uuid::new_v4().to_string());
     let pin = format!("{:06}", rand::random::<u32>() % 1_000_000);
 
+    // Cryptographic authorization secret: 256 bits of high entropy
+    // This token NEVER goes over unencrypted channels and is strictly required for handshake
+    let mut auth_token = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut auth_token);
+    let auth_token_hex = hex::encode(auth_token);
+
     let host_key = Arc::new(KeyPair::generate());
     let host_pub_hex = hex::encode(host_key.public_bytes());
 
@@ -81,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         relay: args.relay.clone(),
         room: room_id.clone(),
         host_pub: host_pub_hex.clone(),
+        auth_token: auth_token_hex.clone(),
         pin: pin.clone(),
     };
 
@@ -94,27 +122,41 @@ async fn main() -> anyhow::Result<()> {
         .light_color(unicode::Dense1x2::Dark)
         .build();
 
-    println!("\n==================================================================");
-    println!("             🔒 PCTunnel Windows Host Agent v0.1.0                ");
-    println!("         Zero-Trust Encrypted Remote Terminal Bridge              ");
-    println!("==================================================================\n");
+    let local_ip = get_local_ip();
 
-    println!("Scan this QR Code using the PCTunnel Android App:\n");
-    println!("{}", qr_string);
-    println!("\n------------------------------------------------------------------");
-    println!("  Relay Server : {}", args.relay);
-    println!("  Room UUID    : {}", room_id);
-    println!("  One-Time PIN : {}", pin);
-    println!("  Target Shell : {}", shell);
-    println!("  Security     : X25519 + ChaCha20-Poly1305 (E2EE)");
-    println!("------------------------------------------------------------------");
-    println!("  Type 'q' + Enter or press Ctrl+C at any time for [KILLSWITCH]   ");
-    println!("==================================================================\n");
+    // Modern Minimalist Dark UI
+    print!("\x1B[2J\x1B[1;1H"); // Clear screen
+    println!("\x1b[38;2;16;185;129m╭─────────────────────────────────────────────────────────────────────╮\x1b[0m");
+    println!("\x1b[38;2;16;185;129m│\x1b[0m   \x1b[1;38;2;255;255;255mPCTUNNEL\x1b[0m  \x1b[38;2;100;116;139m│\x1b[0m  \x1b[38;2;16;185;129m● HOST ACTIVE\x1b[0m  \x1b[38;2;100;116;139m(Zero-Trust E2EE ConPTY Bridge)\x1b[0m         \x1b[38;2;16;185;129m│\x1b[0m");
+    println!("\x1b[38;2;16;185;129m╰─────────────────────────────────────────────────────────────────────╯\x1b[0m\n");
+
+    println!("  \x1b[1;38;2;0;242;254m[ 1. SCAN TO CONNECT (Zero-Config / Remote) ]\x1b[0m");
+    println!("  Scan this QR code from the PCTunnel Android App:\n");
+
+    for line in qr_string.lines() {
+        println!("    {}", line);
+    }
+
+    println!("\n  \x1b[38;2;148;163;184m╭─ Connection Details ───────────────────────────────────────────────╮\x1b[0m");
+    println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mRelay Host   :\x1b[0m \x1b[1;38;2;241;245;249m{}\x1b[0m", args.relay);
+    println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mRoom UUID    :\x1b[0m \x1b[38;2;56;189;248m{}\x1b[0m", room_id);
+    println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mAuth Token   :\x1b[0m \x1b[38;2;168;85;247m{}...\x1b[0m (256-bit cryptosecret)", &auth_token_hex[..12]);
+    println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mTarget Shell :\x1b[0m \x1b[38;2;241;245;249m{}\x1b[0m", shell);
+    println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mSecurity     :\x1b[0m \x1b[38;2;16;185;129mChaCha20-Poly1305 + X25519 (Proof-Gated)\x1b[0m");
+    println!("  \x1b[38;2;148;163;184m╰────────────────────────────────────────────────────────────────────╯\x1b[0m");
+
+    println!("\n  \x1b[1;38;2;0;242;254m[ 2. DIRECT SSH (Local LAN / WiFi) ]\x1b[0m");
+    println!("  If your PC has OpenSSH enabled on your local network:");
+    println!("  \x1b[1;38;2;241;245;249m  ssh {}@{}\x1b[0m (Port 22)\n", get_current_user(), local_ip);
+
+    println!("  \x1b[38;2;239;68;68m[KILLSWITCH]\x1b[0m Type \x1b[1;38;2;255;255;255m'q'\x1b[0m or press \x1b[1;38;2;255;255;255mCtrl+C\x1b[0m to instantly terminate session.");
+    println!("  Waiting for authorized peer handshake...\n");
 
     let (session, killswitch) = TunnelHostSession::new(
         args.relay,
         room_id,
         host_key,
+        auth_token,
         pin,
         shell,
     );
@@ -125,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
         let mut line = String::new();
         while std::io::stdin().read_line(&mut line).is_ok() {
             if line.trim().eq_ignore_ascii_case("q") || line.trim().eq_ignore_ascii_case("stop") {
-                println!("\n🛑 [KILLSWITCH ACTIVATED BY USER] Terminating terminal session immediately!");
+                println!("\n\x1b[1;38;2;239;68;68m🛑 [KILLSWITCH ACTIVATED] All processes wiped. Tunnel severed.\x1b[0m");
                 ks_watcher.store(true, Ordering::SeqCst);
                 break;
             }
@@ -133,7 +175,6 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Run session
     if let Err(e) = session.run().await {
         warn!("Session ended with: {:?}", e);
     }

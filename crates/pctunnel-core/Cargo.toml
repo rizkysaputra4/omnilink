@@ -17,6 +17,7 @@ thiserror.workspace = true
 bytes.workspace = true
 uuid.workspace = true
 x25519-dalek.workspace = true
+hex = "0.4"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"

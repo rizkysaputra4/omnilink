@@ -1,5 +1,35 @@
 use anyhow::{bail, Result};
 use bytes::{Buf, BufMut, BytesMut};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
+
+type HmacSha256 = Hmac<Sha256>;
+
+pub fn compute_auth_proof(
+    auth_token: &[u8; 32],
+    client_ephemeral_pub: &[u8; 32],
+    client_id: &str,
+) -> [u8; 32] {
+    let mut mac = HmacSha256::new_from_slice(auth_token).expect("HMAC can take key of any size");
+    mac.update(client_ephemeral_pub);
+    mac.update(client_id.as_bytes());
+    let result = mac.finalize();
+    let bytes = result.into_bytes();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    out
+}
+
+pub fn verify_auth_proof(
+    auth_token: &[u8; 32],
+    client_ephemeral_pub: &[u8; 32],
+    client_id: &str,
+    expected_proof: &[u8; 32],
+) -> bool {
+    let computed = compute_auth_proof(auth_token, client_ephemeral_pub, client_id);
+    computed.ct_eq(expected_proof).into()
+}
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,8 +64,15 @@ impl TryFrom<u8> for FrameType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
-    HandshakeInit { client_ephemeral_pub: [u8; 32], client_id: String },
-    HandshakeResponse { host_ephemeral_pub: [u8; 32], status: u8 },
+    HandshakeInit {
+        client_ephemeral_pub: [u8; 32],
+        client_id: String,
+        auth_proof: [u8; 32],
+    },
+    HandshakeResponse {
+        host_ephemeral_pub: [u8; 32],
+        status: u8, // 0 = success, 1 = auth failed, 2 = rejected
+    },
     TerminalInput(Vec<u8>),
     TerminalOutput(Vec<u8>),
     Resize { cols: u16, rows: u16 },
@@ -63,8 +100,13 @@ impl Frame {
         let mut payload = BytesMut::new();
 
         match self {
-            Frame::HandshakeInit { client_ephemeral_pub, client_id } => {
+            Frame::HandshakeInit {
+                client_ephemeral_pub,
+                client_id,
+                auth_proof,
+            } => {
                 payload.put_slice(client_ephemeral_pub);
+                payload.put_slice(auth_proof);
                 let id_bytes = client_id.as_bytes();
                 payload.put_u16(id_bytes.len() as u16);
                 payload.put_slice(id_bytes);
@@ -114,17 +156,24 @@ impl Frame {
 
         match ftype {
             FrameType::HandshakeInit => {
-                if payload.len() < 34 {
-                    bail!("HandshakeInit payload too short");
+                if payload.len() < 66 {
+                    bail!("HandshakeInit payload too short (< 66 bytes)");
                 }
                 let mut client_ephemeral_pub = [0u8; 32];
                 payload.copy_to_slice(&mut client_ephemeral_pub);
+                let mut auth_proof = [0u8; 32];
+                payload.copy_to_slice(&mut auth_proof);
+
                 let id_len = payload.get_u16() as usize;
                 if payload.remaining() < id_len {
                     bail!("HandshakeInit invalid client_id length");
                 }
                 let client_id = String::from_utf8_lossy(&payload[..id_len]).to_string();
-                Ok(Frame::HandshakeInit { client_ephemeral_pub, client_id })
+                Ok(Frame::HandshakeInit {
+                    client_ephemeral_pub,
+                    client_id,
+                    auth_proof,
+                })
             }
             FrameType::HandshakeResponse => {
                 if payload.len() < 33 {
