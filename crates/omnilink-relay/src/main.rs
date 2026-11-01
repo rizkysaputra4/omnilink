@@ -73,6 +73,7 @@ struct HealthResponse {
 struct WaitingPeer {
     role: String,
     sender: mpsc::UnboundedSender<Message>,
+    paired_tx: tokio::sync::oneshot::Sender<mpsc::UnboundedSender<Message>>,
     connected_at: Instant,
 }
 
@@ -286,80 +287,75 @@ async fn handle_tunnel_socket(
     rooms: SharedRooms,
 ) {
     info!("New connection for room '{}' as role '{}'", room, role);
-    let (mut ws_sender, mut ws_receiver) = socket.split();
+    let (ws_sender, mut ws_receiver) = socket.split();
+    let (tx_to_this_peer, rx_from_other_peer) = mpsc::unbounded_channel::<Message>();
 
-    let (tx_to_this_peer, mut rx_from_other_peer) = mpsc::unbounded_channel::<Message>();
-
-    let counterpart_tx = {
+    let maybe_waiting;
+    {
         let mut map = rooms.write().await;
         if let Some(peer) = map.remove(&room) {
             if peer.role == role {
                 warn!("Duplicate role '{}' in room '{}'. Overwriting peer.", role, room);
+                let (notify_tx, notify_rx) = tokio::sync::oneshot::channel();
                 map.insert(
                     room.clone(),
                     WaitingPeer {
                         role: role.clone(),
                         sender: tx_to_this_peer.clone(),
+                        paired_tx: notify_tx,
                         connected_at: Instant::now(),
                     },
                 );
-                None
+                maybe_waiting = Some(notify_rx);
             } else {
                 info!("Room '{}' paired successfully! Bridging host <--> client", room);
-                Some(peer.sender)
+                // Send our sender to the waiting peer so they can send to us
+                let _ = peer.paired_tx.send(tx_to_this_peer.clone());
+                // Both peers receive OMNILINK_PEER_CONNECTED
+                let _ = peer.sender.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
+                let _ = tx_to_this_peer.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
+
+                run_forwarder(ws_sender, ws_receiver, peer.sender, rx_from_other_peer, room, &rooms).await;
+                return;
             }
         } else {
+            let (notify_tx, notify_rx) = tokio::sync::oneshot::channel();
             map.insert(
                 room.clone(),
                 WaitingPeer {
                     role: role.clone(),
                     sender: tx_to_this_peer.clone(),
+                    paired_tx: notify_tx,
                     connected_at: Instant::now(),
                 },
             );
-            None
+            maybe_waiting = Some(notify_rx);
         }
-    };
+    }
 
-    if let Some(peer_tx) = counterpart_tx {
-        let _ = peer_tx.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
-        let _ = tx_to_this_peer.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
-
-        run_forwarder(ws_sender, ws_receiver, peer_tx, rx_from_other_peer, room, &rooms).await;
-    } else {
+    if let Some(notify_rx) = maybe_waiting {
         let room_name = room.clone();
         let rooms_clone = rooms.clone();
 
-        let mut send_task = tokio::spawn(async move {
-            while let Some(msg) = rx_from_other_peer.recv().await {
-                if ws_sender.send(msg).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        let mut recv_task = tokio::spawn(async move {
-            while let Some(msg) = ws_receiver.next().await {
-                match msg {
-                    Ok(Message::Close(_)) | Err(_) => break,
-                    Ok(Message::Ping(p)) => {
-                        let _ = tx_to_this_peer.send(Message::Pong(p));
-                    }
-                    Ok(_) => {}
-                }
-            }
-        });
-
         tokio::select! {
-            _ = &mut send_task => {},
-            _ = &mut recv_task => {},
-        };
-
-        let mut map = rooms_clone.write().await;
-        if let Some(peer) = map.get(&room_name) {
-            if peer.role == role {
-                map.remove(&room_name);
-                info!("Unpaired peer disconnected, cleaned up room '{}'", room_name);
+            paired = notify_rx => {
+                match paired {
+                    Ok(counterpart_tx) => {
+                        run_forwarder(ws_sender, ws_receiver, counterpart_tx, rx_from_other_peer, room_name, &rooms_clone).await;
+                    }
+                    Err(_) => {
+                        warn!("Counterpart cancelled pairing for room '{}'", room_name);
+                    }
+                }
+            }
+            _msg = ws_receiver.next() => {
+                let mut map = rooms_clone.write().await;
+                if let Some(peer) = map.get(&room_name) {
+                    if peer.role == role {
+                        map.remove(&room_name);
+                        info!("Unpaired peer disconnected, cleaned up room '{}'", room_name);
+                    }
+                }
             }
         }
     }

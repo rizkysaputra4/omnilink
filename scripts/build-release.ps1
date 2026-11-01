@@ -13,8 +13,8 @@ if (-not (Test-Path $distDir)) {
 }
 
 Write-Host "[+] Packaging Portable Windows Bundle..." -ForegroundColor Yellow
-$zipFile = "$distDir\omnilink-windows-x64.zip"
-if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
+$zipFile = "$distDir\omnilink-v0.1.0-windows-x64.zip"
+if (Test-Path $zipFile) { Remove-Item $zipFile -Force -ErrorAction SilentlyContinue }
 
 Compress-Archive -Path @(
     "target\release\omnilink-app.exe",
