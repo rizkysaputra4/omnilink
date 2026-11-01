@@ -61,6 +61,7 @@ import com.google.gson.Gson
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import com.omnilink.android.network.TunnelWebSocketClient
+import com.omnilink.android.terminal.TerminalScreen
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
@@ -116,7 +117,7 @@ class MainActivity : ComponentActivity() {
         var manualInput by remember { mutableStateOf("") }
         var showScanner by remember { mutableStateOf(false) }
 
-        val terminalOutput = remember { mutableStateListOf<String>() }
+        val terminalScreen = remember { TerminalScreen() }
         var currentInput by remember { mutableStateOf("") }
         val listState = rememberLazyListState()
 
@@ -138,7 +139,7 @@ class MainActivity : ComponentActivity() {
             try {
                 vibrateSuccess()
                 tunnelClient?.disconnect()
-                terminalOutput.clear()
+                terminalScreen.clear()
                 status = "Connecting to relay..."
 
                 // Persist pairing so the user NEVER needs to scan again
@@ -152,10 +153,10 @@ class MainActivity : ComponentActivity() {
                     hostPubHex = data.host_pub,
                     authTokenHex = data.auth_token,
                     onOutputReceived = { text ->
-                        terminalOutput.add(text)
+                        terminalScreen.feed(text)
                         coroutineScope.launch {
-                            if (terminalOutput.isNotEmpty()) {
-                                listState.animateScrollToItem(terminalOutput.size - 1)
+                            if (terminalScreen.renderedLines.isNotEmpty()) {
+                                listState.animateScrollToItem(terminalScreen.renderedLines.size - 1)
                             }
                         }
                     },
@@ -326,7 +327,7 @@ class MainActivity : ComponentActivity() {
                         .padding(padding)
                         .background(Color(0xFF090A0F))
                 ) {
-                    // Terminal Output Stream
+                    // Terminal Output Stream with Native ANSI Color & TUI Rendering
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
@@ -334,10 +335,9 @@ class MainActivity : ComponentActivity() {
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        items(terminalOutput) { chunk ->
+                        items(terminalScreen.renderedLines) { annotatedLine ->
                             Text(
-                                text = chunk,
-                                color = Color(0xFF38BDF8),
+                                text = annotatedLine,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 12.5.sp,
                                 lineHeight = 16.sp
@@ -354,16 +354,54 @@ class MainActivity : ComponentActivity() {
                             .padding(horizontal = 6.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // High-priority interactive actions: ENTER, Arrows, Space, Esc, ^C
+                        Button(
+                            onClick = { sendTerminalCommand("\r") },
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .height(32.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00F2FE)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                        ) {
+                            Text("⏎ ENTER", fontSize = 11.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { sendTerminalCommand("\u001b") },
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .height(32.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF332010)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Text("ESC", fontSize = 11.sp, color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { sendTerminalCommand("\u0003") },
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .height(32.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF331515)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Text("^C", fontSize = 11.sp, color = Color(0xFFEF4444), fontWeight = FontWeight.Bold)
+                        }
+
                         listOf(
-                            "ESC" to "\u001b",
-                            "TAB" to "\t",
-                            "^C" to "\u0003",
-                            "^Z" to "\u001a",
-                            "^D" to "\u0004",
                             "▲" to "\u001b[A",
                             "▼" to "\u001b[B",
                             "◀" to "\u001b[D",
                             "▶" to "\u001b[C",
+                            "SPACE" to " ",
+                            "TAB" to "\t",
+                            "y" to "y\r",
+                            "n" to "n\r",
+                            "^Z" to "\u001a",
+                            "^D" to "\u0004",
                             "|" to "|",
                             "~" to "~",
                             "/" to "/"

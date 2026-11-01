@@ -304,10 +304,19 @@ impl OmniLinkGui {
 
             if let Ok(rt) = rt {
                 rt.block_on(async {
-                    if let Err(e) = session.run().await {
-                        if !killswitch.load(Ordering::SeqCst) {
-                            warn!("Session error: {}", e);
-                            logs.lock().unwrap().push(format!("⚠️ Session interrupted: {}", e));
+                    while !killswitch.load(Ordering::SeqCst) {
+                        logs.lock().unwrap().push("🟢 Listening for incoming connections...".into());
+                        match session.run().await {
+                            Ok(_) => {
+                                logs.lock().unwrap().push("Session finished. Ready for next connection...".into());
+                            }
+                            Err(e) => {
+                                if !killswitch.load(Ordering::SeqCst) {
+                                    warn!("Session notice: {}", e);
+                                    logs.lock().unwrap().push(format!("⚠️ Connection closed: {}. Waiting...", e));
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                }
+                            }
                         }
                     }
                 });
