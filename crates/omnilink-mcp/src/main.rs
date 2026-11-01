@@ -70,7 +70,7 @@ fn handle_request(req: JsonRpcRequest) -> JsonRpcResponse {
                     "tools": {}
                 },
                 "serverInfo": {
-                    "name": "pctunnel-mcp",
+                    "name": "omnilink-mcp",
                     "version": "0.1.0"
                 }
             })),
@@ -145,7 +145,7 @@ fn handle_request(req: JsonRpcRequest) -> JsonRpcResponse {
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": "PCTunnel Host Status: ACTIVE\nRelay: wss://relay.findbeatradar.com\nSecurity: E2EE Noise/ChaCha20Poly1305\nProcess Isolation: Win32 ConPTY (Standard User)"
+                                    "text": "OmniLink Host Status: ACTIVE\nRelay: wss://relay.findbeatradar.com\nSecurity: E2EE Noise/ChaCha20Poly1305\nProcess Isolation: Win32 ConPTY (Standard User)"
                                 }
                             ]
                         })),

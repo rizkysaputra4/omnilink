@@ -1,11 +1,11 @@
 [package]
-name = "pctunnel-core"
+name = "omnilink-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-pctunnel-proto = { path = "../pctunnel-proto" }
+omnilink-proto = { path = "../omnilink-proto" }
 tokio.workspace = true
 tokio-tungstenite = { version = "0.23", features = ["native-tls"] }
 futures-util.workspace = true

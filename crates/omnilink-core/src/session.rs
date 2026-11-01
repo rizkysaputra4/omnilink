@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use pctunnel_proto::{verify_auth_proof, Frame, KeyPair, SessionCrypto};
+use omnilink_proto::{verify_auth_proof, Frame, KeyPair, SessionCrypto};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{error, info, warn};
@@ -57,7 +57,7 @@ impl DeviceWhitelist {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .ok()?;
-        Some(PathBuf::from(home).join(".pctunnel").join("authorized_devices.json"))
+        Some(PathBuf::from(home).join(".omnilink").join("authorized_devices.json"))
     }
 }
 
@@ -111,7 +111,7 @@ impl TunnelHostSession {
                 bail!("Killswitch activated before pairing");
             }
             match msg_res {
-                Ok(Message::Text(t)) if t == "PCTUNNEL_PEER_CONNECTED" => {
+                Ok(Message::Text(t)) if t == "OMNILINK_PEER_CONNECTED" => {
                     info!("Incoming peer connection to room! Awaiting cryptographic proof of authorization...");
                     break;
                 }

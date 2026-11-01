@@ -4,8 +4,8 @@ use std::sync::{
 };
 
 use clap::Parser;
-use pctunnel_core::TunnelHostSession;
-use pctunnel_proto::{KeyPair, PairingPayload};
+use omnilink_core::TunnelHostSession;
+use omnilink_proto::{KeyPair, PairingPayload};
 use qrcode::{render::unicode, QrCode};
 use rand::RngCore;
 use tracing::{info, warn};
@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "pctunnel-app",
-    about = "PCTunnel Windows Host - Modern Minimalist Zero-Trust Terminal Bridge"
+    name = "omnilink-app",
+    about = "OmniLink Windows Host - Modern Minimalist Zero-Trust Terminal Bridge"
 )]
 struct Args {
     /// Relay WebSocket URL
@@ -22,12 +22,12 @@ struct Args {
         short,
         long,
         default_value = "wss://relay.findbeatradar.com",
-        env = "PCTUNNEL_RELAY"
+        env = "OMNILINK_RELAY"
     )]
     relay: String,
 
     /// Shell executable to launch (e.g. powershell.exe, pwsh.exe, cmd.exe, bash.exe)
-    #[arg(short, long, env = "PCTUNNEL_SHELL")]
+    #[arg(short, long, env = "OMNILINK_SHELL")]
     shell: Option<String>,
 
     /// Custom Room UUID (leave empty to generate randomly)
@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "pctunnel_app=info,pctunnel_core=info".into()),
+                .unwrap_or_else(|_| "omnilink_app=info,omnilink_core=info".into()),
         )
         .init();
 
@@ -96,7 +96,6 @@ async fn main() -> anyhow::Result<()> {
     let pin = format!("{:06}", rand::random::<u32>() % 1_000_000);
 
     // Cryptographic authorization secret: 256 bits of high entropy
-    // This token NEVER goes over unencrypted channels and is strictly required for handshake
     let mut auth_token = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut auth_token);
     let auth_token_hex = hex::encode(auth_token);
@@ -127,11 +126,11 @@ async fn main() -> anyhow::Result<()> {
     // Modern Minimalist Dark UI
     print!("\x1B[2J\x1B[1;1H"); // Clear screen
     println!("\x1b[38;2;16;185;129m╭─────────────────────────────────────────────────────────────────────╮\x1b[0m");
-    println!("\x1b[38;2;16;185;129m│\x1b[0m   \x1b[1;38;2;255;255;255mPCTUNNEL\x1b[0m  \x1b[38;2;100;116;139m│\x1b[0m  \x1b[38;2;16;185;129m● HOST ACTIVE\x1b[0m  \x1b[38;2;100;116;139m(Zero-Trust E2EE ConPTY Bridge)\x1b[0m         \x1b[38;2;16;185;129m│\x1b[0m");
+    println!("\x1b[38;2;16;185;129m│\x1b[0m   \x1b[1;38;2;255;255;255mOMNILINK\x1b[0m  \x1b[38;2;100;116;139m│\x1b[0m  \x1b[38;2;16;185;129m● HOST ACTIVE\x1b[0m  \x1b[38;2;100;116;139m(Zero-Trust E2EE ConPTY Bridge)\x1b[0m         \x1b[38;2;16;185;129m│\x1b[0m");
     println!("\x1b[38;2;16;185;129m╰─────────────────────────────────────────────────────────────────────╯\x1b[0m\n");
 
     println!("  \x1b[1;38;2;0;242;254m[ 1. SCAN TO CONNECT (Zero-Config / Remote) ]\x1b[0m");
-    println!("  Scan this QR code from the PCTunnel Android App:\n");
+    println!("  Scan this QR code from the OmniLink Android App:\n");
 
     for line in qr_string.lines() {
         println!("    {}", line);
@@ -179,6 +178,6 @@ async fn main() -> anyhow::Result<()> {
         warn!("Session ended with: {:?}", e);
     }
 
-    info!("PCTunnel host agent finished.");
+    info!("OmniLink host agent finished.");
     Ok(())
 }

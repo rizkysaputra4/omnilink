@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.pctunnel.android"
+    namespace = "com.omnilink.android"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.pctunnel.android"
+        applicationId = "com.omnilink.android"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

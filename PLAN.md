@@ -1,6 +1,6 @@
-# PCTunnel: Arsitektur & Rencana Implementasi (Security Hardened & Public Distribution Ready)
+# OmniLink: Arsitektur & Rencana Implementasi (Security Hardened & Public Distribution Ready)
 
-Dokumen ini memuat arsitektur sistem **PCTunnel** dengan dua fokus utama:
+Dokumen ini memuat arsitektur sistem **OmniLink** dengan dua fokus utama:
 1. **Zero-Trust Security**: Menjamin PC lokal tidak dapat disusupi (*infiltrated*) oleh siapapun dari internet, bahkan jika server relay disusupi.
 2. **Zero-Friction User Experience & Distribution**: Memastikan pengguna umum dapat memasang dan memakai software ini dengan *minimum steps to do* (1-Click Installer untuk PC, 1-Command deploy untuk relay VPS, dan Scan QR instan untuk Android).
 

@@ -4,42 +4,42 @@ WORKDIR /app
 
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
-COPY crates/pctunnel-proto/Cargo.toml crates/pctunnel-proto/
-COPY crates/pctunnel-relay/Cargo.toml crates/pctunnel-relay/
-COPY crates/pctunnel-core/Cargo.toml crates/pctunnel-core/
-COPY crates/pctunnel-app/Cargo.toml crates/pctunnel-app/
-COPY crates/pctunnel-mcp/Cargo.toml crates/pctunnel-mcp/
+COPY crates/omnilink-proto/Cargo.toml crates/omnilink-proto/
+COPY crates/omnilink-relay/Cargo.toml crates/omnilink-relay/
+COPY crates/omnilink-core/Cargo.toml crates/omnilink-core/
+COPY crates/omnilink-app/Cargo.toml crates/omnilink-app/
+COPY crates/omnilink-mcp/Cargo.toml crates/omnilink-mcp/
 
 # Build dependencies only for caching
-RUN mkdir -p crates/pctunnel-proto/src crates/pctunnel-relay/src crates/pctunnel-core/src crates/pctunnel-app/src crates/pctunnel-mcp/src && \
-    echo "pub fn dummy() {}" > crates/pctunnel-proto/src/lib.rs && \
-    echo "fn main() {}" > crates/pctunnel-relay/src/main.rs && \
-    echo "pub fn dummy() {}" > crates/pctunnel-core/src/lib.rs && \
-    echo "fn main() {}" > crates/pctunnel-app/src/main.rs && \
-    echo "fn main() {}" > crates/pctunnel-mcp/src/main.rs && \
-    cargo build --release -p pctunnel-relay
+RUN mkdir -p crates/omnilink-proto/src crates/omnilink-relay/src crates/omnilink-core/src crates/omnilink-app/src crates/omnilink-mcp/src && \
+    echo "pub fn dummy() {}" > crates/omnilink-proto/src/lib.rs && \
+    echo "fn main() {}" > crates/omnilink-relay/src/main.rs && \
+    echo "pub fn dummy() {}" > crates/omnilink-core/src/lib.rs && \
+    echo "fn main() {}" > crates/omnilink-app/src/main.rs && \
+    echo "fn main() {}" > crates/omnilink-mcp/src/main.rs && \
+    cargo build --release -p omnilink-relay
 
 # Copy real sources
 COPY crates/ crates/
 
 # Touch main.rs to invalidate build
-RUN touch crates/pctunnel-relay/src/main.rs && \
-    cargo build --release -p pctunnel-relay
+RUN touch crates/omnilink-relay/src/main.rs && \
+    cargo build --release -p omnilink-relay
 
 # Runtime stage: slim and secure
 FROM debian:bullseye-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
-RUN useradd -u 10001 -m -s /bin/false pctunnel
+RUN useradd -u 10001 -m -s /bin/false omnilink
 
-USER pctunnel
-WORKDIR /home/pctunnel
+USER omnilink
+WORKDIR /home/omnilink
 
-COPY --from=builder /app/target/release/pctunnel-relay /usr/local/bin/pctunnel-relay
+COPY --from=builder /app/target/release/omnilink-relay /usr/local/bin/omnilink-relay
 
-ENV PCTUNNEL_BIND=0.0.0.0:8080
+ENV OMNILINK_BIND=0.0.0.0:8080
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8080/health || exit 1
 
-ENTRYPOINT ["/usr/local/bin/pctunnel-relay"]
+ENTRYPOINT ["/usr/local/bin/omnilink-relay"]

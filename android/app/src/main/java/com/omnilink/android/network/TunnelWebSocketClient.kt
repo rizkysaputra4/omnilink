@@ -1,7 +1,7 @@
-package com.pctunnel.android.network
+package com.omnilink.android.network
 
 import android.os.Build
-import com.pctunnel.android.crypto.CryptoEngine
+import com.omnilink.android.crypto.CryptoEngine
 import okhttp3.*
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
@@ -37,7 +37,7 @@ class TunnelWebSocketClient(
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
-                if (text == "PCTUNNEL_PEER_CONNECTED") {
+                if (text == "OMNILINK_PEER_CONNECTED") {
                     onStatusChanged("Host PC connected. Performing E2EE handshake & Proof...")
                     sendHandshakeInit(ws)
                 }

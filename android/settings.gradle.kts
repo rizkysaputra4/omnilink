@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PCTunnel"
+rootProject.name = "OmniLink"
 include(":app")

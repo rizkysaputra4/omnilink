@@ -21,9 +21,9 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
-#[command(name = "pctunnel-relay", about = "Blind Rendezvous Relay for PCTunnel")]
+#[command(name = "omnilink-relay", about = "Blind Rendezvous Relay for OmniLink")]
 struct Args {
-    #[arg(short, long, default_value = "0.0.0.0:8080", env = "PCTUNNEL_BIND")]
+    #[arg(short, long, default_value = "0.0.0.0:8080", env = "OMNILINK_BIND")]
     bind: String,
 }
 
@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "pctunnel_relay=info,tower_http=trace".into()),
+                .unwrap_or_else(|_| "omnilink_relay=info,tower_http=trace".into()),
         )
         .init();
 
@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
 
     let addr: SocketAddr = args.bind.parse()?;
-    info!("🚀 PCTunnel Blind Relay listening on http://{}", addr);
+    info!("🚀 OmniLink Blind Relay listening on http://{}", addr);
     info!("Endpoint tunnel: ws://{}/v1/tunnel?room=<ROOM_ID>&role=host|client", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -105,10 +105,10 @@ async fn main() -> anyhow::Result<()> {
 async fn home_handler() -> Html<&'static str> {
     Html(r#"<!DOCTYPE html>
 <html>
-<head><title>PCTunnel Relay Service</title></head>
+<head><title>OmniLink Relay Service</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px;">
-    <h2>🔒 PCTunnel Blind Relay Active</h2>
-    <p>This is a zero-knowledge rendezvous forwarder for <strong>PCTunnel</strong>.</p>
+    <h2>🔒 OmniLink Blind Relay Active</h2>
+    <p>This is a zero-knowledge rendezvous forwarder for <strong>OmniLink</strong>.</p>
     <p>Status: <span style="color: green; font-weight: bold;">ONLINE</span></p>
     <p>Endpoints:</p>
     <ul>
@@ -123,7 +123,7 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     let rooms_count = state.rooms.read().await.len();
     Json(HealthResponse {
         status: "ok",
-        service: "pctunnel-relay",
+        service: "omnilink-relay",
         active_rooms: rooms_count,
         uptime_secs: state.start_time.elapsed().as_secs(),
     })
@@ -189,8 +189,8 @@ async fn handle_tunnel_socket(
 
     if let Some(peer_tx) = counterpart_tx {
         // We are paired immediately! Notify peer that counterpart has connected
-        let _ = peer_tx.send(Message::Text("PCTUNNEL_PEER_CONNECTED".into()));
-        let _ = tx_to_this_peer.send(Message::Text("PCTUNNEL_PEER_CONNECTED".into()));
+        let _ = peer_tx.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
+        let _ = tx_to_this_peer.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
 
         // Run bidirectional forwarder
         run_forwarder(ws_sender, ws_receiver, peer_tx, rx_from_other_peer, room, &rooms).await;

@@ -91,12 +91,12 @@ impl SessionCrypto {
     pub fn from_shared_secret(shared_secret: &[u8; 32], is_host: bool) -> Self {
         let mut hasher_hc = Sha256::new();
         hasher_hc.update(shared_secret);
-        hasher_hc.update(b"PCTUNNEL_HOST_TO_CLIENT_V1");
+        hasher_hc.update(b"OMNILINK_HOST_TO_CLIENT_V1");
         let key_hc = hasher_hc.finalize();
 
         let mut hasher_ch = Sha256::new();
         hasher_ch.update(shared_secret);
-        hasher_ch.update(b"PCTUNNEL_CLIENT_TO_HOST_V1");
+        hasher_ch.update(b"OMNILINK_CLIENT_TO_HOST_V1");
         let key_ch = hasher_ch.finalize();
 
         let (send_key, recv_key) = if is_host {

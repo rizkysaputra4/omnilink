@@ -2,14 +2,14 @@
 set -e
 
 # ==============================================================================
-# PCTunnel Relay One-Command VPS Deployment Script
-# Target: Ubuntu/Debian VPS (e.g. FindBeatRadar.com subdomain)
+# OmniLink Relay One-Command VPS Deployment Script
+# Target: Ubuntu/Debian VPS (e.g. findbeatradar.com subdomain)
 # ==============================================================================
 
 DOMAIN="${1:-relay.findbeatradar.com}"
 
 echo "====================================================="
-echo "  🚀 Deploying PCTunnel Blind Relay Server           "
+echo "  🚀 Deploying OmniLink Blind Relay Server           "
 echo "  Domain: https://${DOMAIN}                          "
 echo "====================================================="
 
@@ -42,7 +42,7 @@ ufw allow 443/tcp || true
 ufw --force enable || true
 
 # 3. Create deploy directory
-DEPLOY_DIR="/opt/pctunnel"
+DEPLOY_DIR="/opt/omnilink"
 mkdir -p "${DEPLOY_DIR}"
 cd "${DEPLOY_DIR}"
 
@@ -51,11 +51,11 @@ export RELAY_DOMAIN="${DOMAIN}"
 echo "RELAY_DOMAIN=${DOMAIN}" > .env
 
 # Run docker-compose
-echo "[+] Building and starting PCTunnel Relay with Caddy SSL..."
+echo "[+] Building and starting OmniLink Relay with Caddy SSL..."
 docker compose -f deploy/docker-compose.yml up -d --build
 
 echo "====================================================="
-echo "  ✅ PCTunnel Relay Successfully Deployed!           "
+echo "  ✅ OmniLink Relay Successfully Deployed!           "
 echo "  WebSocket Endpoint: wss://${DOMAIN}/v1/tunnel      "
 echo "  Health Check:       https://${DOMAIN}/health       "
 echo "====================================================="

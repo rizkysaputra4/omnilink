@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/pctunnel-proto",
-    "crates/pctunnel-relay",
-    "crates/pctunnel-core",
-    "crates/pctunnel-app",
-    "crates/pctunnel-mcp"
+    "crates/omnilink-proto",
+    "crates/omnilink-relay",
+    "crates/omnilink-core",
+    "crates/omnilink-app",
+    "crates/omnilink-mcp"
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["PCTunnel Authors"]
+authors = ["OmniLink Authors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]

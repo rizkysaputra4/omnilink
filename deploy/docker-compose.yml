@@ -1,18 +1,18 @@
 version: '3.8'
 
 services:
-  pctunnel-relay:
+  omnilink-relay:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
     environment:
-      - PCTUNNEL_BIND=0.0.0.0:8080
+      - OMNILINK_BIND=0.0.0.0:8080
       - RUST_LOG=info
     expose:
       - "8080"
     networks:
-      - pctunnel-net
+      - omnilink-net
 
   caddy:
     image: caddy:2-alpine
@@ -27,12 +27,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - pctunnel-relay
+      - omnilink-relay
     networks:
-      - pctunnel-net
+      - omnilink-net
 
 networks:
-  pctunnel-net:
+  omnilink-net:
     driver: bridge
 
 volumes:

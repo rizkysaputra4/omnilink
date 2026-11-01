@@ -1,4 +1,4 @@
-package com.pctunnel.android
+package com.omnilink.android
 
 import android.os.Bundle
 import android.widget.Toast
@@ -34,7 +34,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.gson.Gson
-import com.pctunnel.android.network.TunnelWebSocketClient
+import com.omnilink.android.network.TunnelWebSocketClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            PCTunnelModernTheme {
+            OmniLinkModernTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = Color(0xFF090A0F)
@@ -197,7 +197,7 @@ class MainActivity : ComponentActivity() {
                         Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    "PCTUNNEL",
+                                    "OMNILINK",
                                     fontSize = 17.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White
@@ -549,7 +549,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun PCTunnelModernTheme(content: @Composable () -> Unit) {
+    fun OmniLinkModernTheme(content: @Composable () -> Unit) {
         MaterialTheme(
             colorScheme = darkColorScheme(
                 primary = Color(0xFF00F2FE),

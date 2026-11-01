@@ -1,4 +1,4 @@
-package com.pctunnel.android.crypto
+package com.omnilink.android.crypto
 
 import org.bouncycastle.crypto.agreement.X25519Agreement
 import org.bouncycastle.crypto.generators.X25519KeyPairGenerator
@@ -45,13 +45,13 @@ class CryptoEngine {
         // Host -> Client Key
         val shaHc = MessageDigest.getInstance("SHA-256")
         shaHc.update(sharedSecret)
-        shaHc.update("PCTUNNEL_HOST_TO_CLIENT_V1".toByteArray(Charsets.UTF_8))
+        shaHc.update("OMNILINK_HOST_TO_CLIENT_V1".toByteArray(Charsets.UTF_8))
         val keyHc = shaHc.digest()
 
         // Client -> Host Key
         val shaCh = MessageDigest.getInstance("SHA-256")
         shaCh.update(sharedSecret)
-        shaCh.update("PCTUNNEL_CLIENT_TO_HOST_V1".toByteArray(Charsets.UTF_8))
+        shaCh.update("OMNILINK_CLIENT_TO_HOST_V1".toByteArray(Charsets.UTF_8))
         val keyCh = shaCh.digest()
 
         // As client: send = keyCh, recv = keyHc

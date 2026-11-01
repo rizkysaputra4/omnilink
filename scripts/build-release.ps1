@@ -1,10 +1,10 @@
 # ==============================================================================
-# PCTunnel Build Release & Distribution Packaging Script
+# OmniLink Build Release & Distribution Packaging Script
 # ==============================================================================
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "[+] Building PCTunnel in release mode..." -ForegroundColor Cyan
+Write-Host "[+] Building OmniLink in release mode..." -ForegroundColor Cyan
 cargo build --release --workspace
 
 $distDir = "dist"
@@ -13,12 +13,12 @@ if (-not (Test-Path $distDir)) {
 }
 
 Write-Host "[+] Packaging Portable Windows Bundle..." -ForegroundColor Yellow
-$zipFile = "$distDir\pctunnel-windows-x64.zip"
+$zipFile = "$distDir\omnilink-windows-x64.zip"
 if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
 
 Compress-Archive -Path @(
-    "target\release\pctunnel-app.exe",
-    "target\release\pctunnel-mcp.exe",
+    "target\release\omnilink-app.exe",
+    "target\release\omnilink-mcp.exe",
     "scripts\install.ps1",
     "README.md"
 ) -DestinationPath $zipFile -Force
