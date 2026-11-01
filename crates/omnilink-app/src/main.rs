@@ -601,6 +601,50 @@ impl eframe::App for OmniLinkGui {
                             self.active_term_id = next_id;
                         }
                     }
+
+                    // [+ 🚀 AGY]
+                    if ui.button(RichText::new("+ 🚀 AGY").size(11.0).strong().color(Color32::from_rgb(0, 242, 254))).clicked() {
+                        let next_id = term_ids.iter().max().map_or(0, |m| m + 1);
+                        if let Some(ks) = &self.active_killswitch {
+                            let _ = spawn_terminal_instance(
+                                next_id,
+                                self.selected_shell.clone(),
+                                &self.terminals,
+                                &self.broadcaster,
+                                ks,
+                            );
+                            self.active_term_id = next_id;
+                            let terms = self.terminals.clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(Duration::from_millis(350));
+                                if let Some(term) = terms.lock().unwrap().get(&next_id) {
+                                    let _ = term.write_input(b"agy --dangerously-skip-permissions\r");
+                                }
+                            });
+                        }
+                    }
+
+                    // [+ 🤖 Claude]
+                    if ui.button(RichText::new("+ 🤖 Claude").size(11.0).strong().color(Color32::from_rgb(245, 158, 11))).clicked() {
+                        let next_id = term_ids.iter().max().map_or(0, |m| m + 1);
+                        if let Some(ks) = &self.active_killswitch {
+                            let _ = spawn_terminal_instance(
+                                next_id,
+                                self.selected_shell.clone(),
+                                &self.terminals,
+                                &self.broadcaster,
+                                ks,
+                            );
+                            self.active_term_id = next_id;
+                            let terms = self.terminals.clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(Duration::from_millis(350));
+                                if let Some(term) = terms.lock().unwrap().get(&next_id) {
+                                    let _ = term.write_input(b"claude --dangerously-skip-permissions\r");
+                                }
+                            });
+                        }
+                    }
                 });
 
                 right.add_space(4.0);
@@ -642,6 +686,12 @@ impl eframe::App for OmniLinkGui {
 
                 // Quick Keystrokes Toolbar
                 right.horizontal(|ui| {
+                    if ui.button(RichText::new("🚀 AGY").size(10.0).strong().color(Color32::from_rgb(0, 242, 254))).clicked() {
+                        self.send_keystroke_to_active(b"agy --dangerously-skip-permissions\r");
+                    }
+                    if ui.button(RichText::new("🤖 Claude").size(10.0).strong().color(Color32::from_rgb(245, 158, 11))).clicked() {
+                        self.send_keystroke_to_active(b"claude --dangerously-skip-permissions\r");
+                    }
                     if ui.add(
                         egui::Button::new(RichText::new("⏎ ENTER").size(10.0).strong().color(Color32::BLACK))
                             .fill(Color32::from_rgb(0, 242, 254))

@@ -386,6 +386,18 @@ class MainActivity : ComponentActivity() {
             tunnelClient?.spawnTerminal(nextId)
         }
 
+        val spawnPresetTab = { title: String, cmd: String ->
+            val nextId = (tabs.maxOfOrNull { it.id } ?: 0) + 1
+            val newTab = TerminalTab(nextId, title)
+            tabs.add(newTab)
+            activeTabId = nextId
+            tunnelClient?.spawnTerminal(nextId)
+            coroutineScope.launch {
+                kotlinx.coroutines.delay(350)
+                tunnelClient?.sendInput("$cmd\r", nextId)
+            }
+        }
+
         val closeTerminalTab = { id: Int ->
             if (tabs.size > 1) {
                 tunnelClient?.closeTerminal(id)
@@ -573,6 +585,50 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.size(16.dp)
                             )
                         }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        // Preset Tab: AGY Auto-Allow
+                        Surface(
+                            onClick = { spawnPresetTab("AGY 🚀", "agy --dangerously-skip-permissions") },
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF0D2538),
+                            border = BorderStroke(1.dp, Color(0xFF00F2FE)),
+                            modifier = Modifier.padding(end = 6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    "+ 🚀 AGY",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF00F2FE)
+                                )
+                            }
+                        }
+
+                        // Preset Tab: Claude Auto-Allow
+                        Surface(
+                            onClick = { spawnPresetTab("Claude 🤖", "claude --dangerously-skip-permissions") },
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF2E1C12),
+                            border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                            modifier = Modifier.padding(end = 6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    "+ 🤖 Claude",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFFBBF24)
+                                )
+                            }
+                        }
                     }
 
                     LaunchedEffect(activeTabId) {
@@ -612,6 +668,33 @@ class MainActivity : ComponentActivity() {
                             .padding(horizontal = 6.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // AI Agent Quick Presets (Execute directly on current terminal)
+                        Button(
+                            onClick = { sendTerminalCommand("agy --dangerously-skip-permissions\r") },
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .height(32.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D2538)),
+                            border = BorderStroke(1.dp, Color(0xFF00F2FE)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Text("🚀 AGY (Auto)", fontSize = 11.sp, color = Color(0xFF00F2FE), fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { sendTerminalCommand("claude --dangerously-skip-permissions\r") },
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .height(32.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E1C12)),
+                            border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Text("🤖 Claude (Auto)", fontSize = 11.sp, color = Color(0xFFFBBF24), fontWeight = FontWeight.Bold)
+                        }
+
                         // High-priority interactive actions: ENTER, Arrows, Space, Esc, ^C
                         Button(
                             onClick = { sendTerminalCommand("\r") },
