@@ -174,8 +174,8 @@ fn main() -> anyhow::Result<()> {
     // Launch Modern Native Windows GUI
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([460.0, 710.0])
-            .with_min_inner_size([420.0, 640.0])
+            .with_inner_size([460.0, 760.0])
+            .with_min_inner_size([420.0, 680.0])
             .with_title("OmniLink - Secure Zero-Trust Terminal Bridge")
             .with_active(true),
         ..Default::default()
@@ -241,32 +241,34 @@ impl OmniLinkGui {
     fn generate_qr_texture(ctx: &egui::Context, url: &str) -> Option<egui::TextureHandle> {
         let qr = QrCode::new(url.as_bytes()).ok()?;
         let width = qr.width();
-        let border = 2;
-        let total_w = width + border * 2;
-        let mut pixels = Vec::with_capacity(total_w * total_w);
+        let border_modules = 5;
+        let scale = 8;
+        let total_modules = width + border_modules * 2;
+        let total_px = total_modules * scale;
+        let mut pixels = vec![Color32::WHITE; total_px * total_px];
 
-        for y in 0..total_w {
-            for x in 0..total_w {
-                let is_dark = if x >= border && x < width + border && y >= border && y < width + border {
-                    qr[(x - border, y - border)] == qrcode::Color::Dark
-                } else {
-                    false
-                };
-
-                pixels.push(if is_dark {
-                    Color32::from_rgb(0, 0, 0)
-                } else {
-                    Color32::from_rgb(255, 255, 255)
-                });
+        for y in 0..width {
+            for x in 0..width {
+                if qr[(x, y)] == qrcode::Color::Dark {
+                    let start_px = (x + border_modules) * scale;
+                    let start_py = (y + border_modules) * scale;
+                    for dy in 0..scale {
+                        for dx in 0..scale {
+                            let px = start_px + dx;
+                            let py = start_py + dy;
+                            pixels[py * total_px + px] = Color32::BLACK;
+                        }
+                    }
+                }
             }
         }
 
         let image = egui::ColorImage {
-            size: [total_w, total_w],
+            size: [total_px, total_px],
             pixels,
         };
 
-        Some(ctx.load_texture("omnilink_qr", image, egui::TextureOptions::NEAREST))
+        Some(ctx.load_texture("omnilink_qr", image, egui::TextureOptions::LINEAR))
     }
 
     fn start_service(&mut self) {
@@ -410,20 +412,27 @@ impl eframe::App for OmniLinkGui {
                 .inner_margin(16.0)
                 .show(ui, |ui| {
                     ui.vertical_centered(|ui| {
-                        ui.label(RichText::new("SCAN TO PAIR PHONE").size(14.0).strong().color(Color32::WHITE));
+                        ui.label(RichText::new("SCAN TO PAIR PHONE").size(15.0).strong().color(Color32::WHITE));
                         ui.label(
                             RichText::new("Scan once from OmniLink Android App to bind permanently")
                                 .size(11.0)
                                 .color(Color32::from_rgb(148, 163, 184)),
                         );
 
-                        ui.add_space(8.0);
+                        ui.add_space(10.0);
 
-                        if let Some(texture) = &self.qr_texture {
-                            ui.image((texture.id(), Vec2::new(170.0, 170.0)));
-                        }
+                        // High-contrast pure white card frame
+                        egui::Frame::none()
+                            .fill(Color32::WHITE)
+                            .rounding(10.0)
+                            .inner_margin(8.0)
+                            .show(ui, |ui| {
+                                if let Some(texture) = &self.qr_texture {
+                                    ui.image((texture.id(), Vec2::new(230.0, 230.0)));
+                                }
+                            });
 
-                        ui.add_space(8.0);
+                        ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
                             if ui.button("📋 Copy 1-Click Link").clicked() {

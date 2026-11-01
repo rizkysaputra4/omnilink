@@ -58,7 +58,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.google.gson.Gson
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.omnilink.android.network.TunnelWebSocketClient
 import com.omnilink.android.terminal.TerminalScreen
@@ -778,6 +780,7 @@ fun QrScannerDialog(
                         }
 
                         val imageAnalysis = ImageAnalysis.Builder()
+                            .setTargetResolution(android.util.Size(1280, 720))
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build()
 
@@ -846,13 +849,44 @@ fun QrScannerDialog(
                         .border(2.dp, Color(0xFF00F2FE), RoundedCornerShape(16.dp))
                 )
 
-                // Bottom Hint
-                Text(
-                    "Point at the QR code displayed on your PC app",
-                    color = Color(0xFF94A3B8),
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(bottom = 32.dp)
-                )
+                // Bottom Hint & Quick Paste
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(bottom = 24.dp)
+                ) {
+                    Text(
+                        "Point at the QR code displayed on your PC app",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    Button(
+                        onClick = {
+                            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = cm.primaryClip
+                            if (clip != null && clip.itemCount > 0) {
+                                val text = clip.getItemAt(0).text?.toString() ?: ""
+                                if (text.isNotBlank()) {
+                                    onQrScanned(text)
+                                } else {
+                                    Toast.makeText(ctx, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                Toast.makeText(ctx, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2230)),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = Color(0xFF00F2FE), modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Paste Copied Link from PC", fontSize = 12.sp, color = Color.White)
+                    }
+                }
             }
         }
     }
@@ -862,7 +896,10 @@ fun QrScannerDialog(
 class QrCodeAnalyzer(
     private val onQrDetected: (String) -> Unit
 ) : ImageAnalysis.Analyzer {
-    private val scanner = BarcodeScanning.getClient()
+    private val options = BarcodeScannerOptions.Builder()
+        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+        .build()
+    private val scanner = BarcodeScanning.getClient(options)
     private var isScanned = false
 
     override fun analyze(imageProxy: ImageProxy) {
@@ -893,6 +930,38 @@ class QrCodeAnalyzer(
 // Universal Payload Parser (Handles HTTPS URL, Deep Link, Base64, and JSON)
 // ==============================================================================
 
+fun decodeBase64Flexible(raw: String): String? {
+    val clean = raw.trim()
+    val padded = when (clean.length % 4) {
+        2 -> "$clean=="
+        3 -> "$clean="
+        else -> clean
+    }
+
+    // 1. Try URL_SAFE
+    try {
+        val bytes = Base64.decode(padded, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+        val s = String(bytes, Charsets.UTF_8)
+        if (s.startsWith("{") && s.contains("relay")) return s
+    } catch (_: Exception) {}
+
+    // 2. Try DEFAULT
+    try {
+        val bytes = Base64.decode(padded, Base64.DEFAULT or Base64.NO_PADDING or Base64.NO_WRAP)
+        val s = String(bytes, Charsets.UTF_8)
+        if (s.startsWith("{") && s.contains("relay")) return s
+    } catch (_: Exception) {}
+
+    // 3. Try standard URL_SAFE without extra flags
+    try {
+        val bytes = Base64.decode(clean, Base64.URL_SAFE)
+        val s = String(bytes, Charsets.UTF_8)
+        if (s.startsWith("{") && s.contains("relay")) return s
+    } catch (_: Exception) {}
+
+    return null
+}
+
 fun parsePairingPayload(input: String): PairingData? {
     val trimmed = input.trim()
 
@@ -904,26 +973,20 @@ fun parsePairingPayload(input: String): PairingData? {
                 ?: uri.getQueryParameter("d")
                 ?: uri.fragment
             if (!dataParam.isNullOrBlank()) {
-                val decodedJson = String(
-                    Base64.decode(dataParam, Base64.URL_SAFE or Base64.DEFAULT),
-                    Charsets.UTF_8
-                )
-                return Gson().fromJson(decodedJson, PairingData::class.java)
+                val decodedJson = decodeBase64Flexible(dataParam)
+                if (decodedJson != null) {
+                    return Gson().fromJson(decodedJson, PairingData::class.java)
+                }
             }
         } catch (_: Exception) {}
     }
 
     // 2. Check if it's base64 encoded JSON directly
     if (!trimmed.startsWith("{")) {
-        try {
-            val decoded = String(
-                Base64.decode(trimmed, Base64.URL_SAFE or Base64.DEFAULT),
-                Charsets.UTF_8
-            )
-            if (decoded.startsWith("{") && decoded.contains("relay")) {
-                return Gson().fromJson(decoded, PairingData::class.java)
-            }
-        } catch (_: Exception) {}
+        val decoded = decodeBase64Flexible(trimmed)
+        if (decoded != null) {
+            return Gson().fromJson(decoded, PairingData::class.java)
+        }
     }
 
     // 3. Check if it's raw JSON
