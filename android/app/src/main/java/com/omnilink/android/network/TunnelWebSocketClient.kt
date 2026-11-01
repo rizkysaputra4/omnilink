@@ -28,7 +28,9 @@ class TunnelWebSocketClient(
 
     fun connect() {
         onStatusChanged("Connecting to relay...")
-        val url = "$relayUrl/v1/tunnel?room=$roomId&role=client"
+        val base = relayUrl.trimEnd('/')
+        val endpoint = if (base.endsWith("/v1/tunnel")) base else "$base/v1/tunnel"
+        val url = "$endpoint?room=$roomId&role=client"
         val request = Request.Builder().url(url).build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {

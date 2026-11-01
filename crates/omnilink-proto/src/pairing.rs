@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,6 +19,12 @@ pub struct PairingPayload {
 impl PairingPayload {
     pub fn to_json(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
+    }
+
+    pub fn to_url(&self) -> Result<String> {
+        let json = self.to_json()?;
+        let encoded = URL_SAFE_NO_PAD.encode(json.as_bytes());
+        Ok(format!("https://relay.findbeatradar.com/pair?data={}", encoded))
     }
 
     pub fn from_json(json: &str) -> Result<Self> {

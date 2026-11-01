@@ -123,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(home_handler))
+        .route("/pair", get(pair_handler))
         .route("/health", get(health_handler))
         .route("/v1/tunnel", get(ws_tunnel_handler))
         .route("/v1/notify", post(push_notify_handler))
@@ -139,6 +140,41 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct PairQuery {
+    data: Option<String>,
+}
+
+async fn pair_handler(Query(query): Query<PairQuery>) -> Html<String> {
+    let data = query.data.unwrap_or_default();
+    let deep_link = format!("omnilink://pair?data={}", data);
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OmniLink Connection</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #090a0f; color: #f1f5f9; text-align: center; padding: 40px 20px; }}
+        .card {{ background: #12141d; border: 1px solid #262b3a; border-radius: 16px; padding: 30px; max-width: 440px; margin: 40px auto; }}
+        .btn {{ display: inline-block; background: #00f2fe; color: #000; font-weight: bold; padding: 14px 28px; border-radius: 10px; text-decoration: none; margin-top: 20px; font-size: 16px; }}
+    </style>
+    <script>
+        window.location.href = "{deep_link}";
+    </script>
+</head>
+<body>
+    <div class="card">
+        <h2>🔒 OmniLink Pairing</h2>
+        <p style="color: #94a3b8;">Redirecting to your OmniLink Android App...</p>
+        <a class="btn" href="{deep_link}">Open in OmniLink App</a>
+    </div>
+</body>
+</html>"#,
+        deep_link = deep_link
+    ))
 }
 
 async fn home_handler() -> Html<&'static str> {
@@ -290,8 +326,7 @@ async fn handle_tunnel_socket(
     let (ws_sender, mut ws_receiver) = socket.split();
     let (tx_to_this_peer, rx_from_other_peer) = mpsc::unbounded_channel::<Message>();
 
-    let maybe_waiting;
-    {
+    let (paired_peer_sender, maybe_waiting) = {
         let mut map = rooms.write().await;
         if let Some(peer) = map.remove(&room) {
             if peer.role == role {
@@ -306,17 +341,13 @@ async fn handle_tunnel_socket(
                         connected_at: Instant::now(),
                     },
                 );
-                maybe_waiting = Some(notify_rx);
+                (None, Some(notify_rx))
             } else {
                 info!("Room '{}' paired successfully! Bridging host <--> client", room);
-                // Send our sender to the waiting peer so they can send to us
                 let _ = peer.paired_tx.send(tx_to_this_peer.clone());
-                // Both peers receive OMNILINK_PEER_CONNECTED
                 let _ = peer.sender.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
                 let _ = tx_to_this_peer.send(Message::Text("OMNILINK_PEER_CONNECTED".into()));
-
-                run_forwarder(ws_sender, ws_receiver, peer.sender, rx_from_other_peer, room, &rooms).await;
-                return;
+                (Some(peer.sender), None)
             }
         } else {
             let (notify_tx, notify_rx) = tokio::sync::oneshot::channel();
@@ -329,8 +360,13 @@ async fn handle_tunnel_socket(
                     connected_at: Instant::now(),
                 },
             );
-            maybe_waiting = Some(notify_rx);
+            (None, Some(notify_rx))
         }
+    };
+
+    if let Some(peer_sender) = paired_peer_sender {
+        run_forwarder(ws_sender, ws_receiver, peer_sender, rx_from_other_peer, room, &rooms).await;
+        return;
     }
 
     if let Some(notify_rx) = maybe_waiting {

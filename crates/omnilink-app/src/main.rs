@@ -107,17 +107,18 @@ async fn main() -> anyhow::Result<()> {
         pin: pin.clone(),
     };
 
+    let pairing_url = pairing.to_url()?;
     let pairing_json = pairing.to_json()?;
 
-    // Generate terminal QR Code
-    let qr = QrCode::new(pairing_json.as_bytes())?;
+    // Generate terminal QR Code using the public HTTPS pairing URL
+    let qr = QrCode::new(pairing_url.as_bytes())?;
     let qr_string = qr
         .render::<unicode::Dense1x2>()
         .dark_color(unicode::Dense1x2::Light)
         .light_color(unicode::Dense1x2::Dark)
         .build();
 
-    let local_ip = get_local_ip();
+    let _local_ip = get_local_ip();
 
     // Modern Minimalist Dark UI
     print!("\x1B[2J\x1B[1;1H"); // Clear screen
@@ -126,19 +127,21 @@ async fn main() -> anyhow::Result<()> {
     println!("\x1b[38;2;16;185;129m╰─────────────────────────────────────────────────────────────────────╯\x1b[0m\n");
 
     println!("  \x1b[1;38;2;0;242;254m[ 1. SCAN TO CONNECT (Zero-Config / Remote) ]\x1b[0m");
-    println!("  Scan this QR code from the OmniLink Android App:\n");
+    println!("  Scan this QR code from the OmniLink Android App or Phone Camera:\n");
 
     for line in qr_string.lines() {
         println!("    {}", line);
     }
 
     println!("\n  \x1b[38;2;148;163;184m╭─ Connection Details ───────────────────────────────────────────────╮\x1b[0m");
+    println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mPairing URL  :\x1b[0m \x1b[38;2;56;189;248m{}\x1b[0m", pairing_url);
     println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mRelay Host   :\x1b[0m \x1b[1;38;2;241;245;249m{}\x1b[0m", args.relay);
     println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mRoom UUID    :\x1b[0m \x1b[38;2;56;189;248m{}\x1b[0m", room_id);
     println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mAuth Token   :\x1b[0m \x1b[38;2;168;85;247m{}...\x1b[0m (256-bit cryptosecret)", &auth_token_hex[..12]);
     println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mTarget Shell :\x1b[0m \x1b[38;2;241;245;249m{}\x1b[0m", shell);
     println!("  \x1b[38;2;148;163;184m│\x1b[0m  \x1b[38;2;100;116;139mSecurity     :\x1b[0m \x1b[38;2;16;185;129mChaCha20-Poly1305 + X25519 (Proof-Gated)\x1b[0m");
     println!("  \x1b[38;2;148;163;184m╰────────────────────────────────────────────────────────────────────╯\x1b[0m");
+    println!("  \x1b[38;2;100;116;139mOr copy raw JSON payload:\x1b[0m {}", pairing_json);
 
     println!("\n  \x1b[38;2;239;68;68m[KILLSWITCH]\x1b[0m Type \x1b[1;38;2;255;255;255m'q'\x1b[0m or press \x1b[1;38;2;255;255;255mCtrl+C\x1b[0m to instantly terminate session.");
     println!("  Waiting for authorized peer handshake...\n");
