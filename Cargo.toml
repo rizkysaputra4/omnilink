@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pctunnel-proto",
+    "crates/pctunnel-relay",
+    "crates/pctunnel-core",
+    "crates/pctunnel-app",
+    "crates/pctunnel-mcp"
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["PCTunnel Authors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+tokio = { version = "1.38", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+thiserror = "1.0"
+uuid = { version = "1.8", features = ["v4", "serde"] }
+bytes = "1.6"
+qrcode = "0.14"
+rand = "0.8"
+chacha20poly1305 = "0.10"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+sha2 = "0.10"
+subtle = "2.5"

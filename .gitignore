@@ -1,0 +1,29 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Android
+.gradle/
+build/
+*.apk
+*.aab
+local.properties
+.idea/
+*.iml
+
+# IDE & Editor
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary / Logs
+*.log

@@ -1,0 +1,14 @@
+# Subdomain for PCTunnel Relay
+# Ganti relay.findbeatradar.com jika menggunakan subdomain lain
+{$RELAY_DOMAIN:relay.findbeatradar.com} {
+    # Automatic TLS with Let's Encrypt / ZeroSSL
+    encode zstd gzip
+
+    # Forward WebSocket and HTTP requests to pctunnel-relay
+    reverse_proxy pctunnel-relay:8080 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
