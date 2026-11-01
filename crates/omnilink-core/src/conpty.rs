@@ -78,10 +78,6 @@ pub mod win {
                     }
                 };
 
-                // Close pseudo console handles that child inherited
-                let _ = CloseHandle(h_pipe_pty_in);
-                let _ = CloseHandle(h_pipe_pty_out);
-
                 // Initialize ProcThreadAttributeList
                 let mut attr_size: usize = 0;
                 let _ = InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST(ptr::null_mut()), 1, 0, &mut attr_size);
@@ -89,6 +85,8 @@ pub mod win {
                 let mut attr_list_buf = vec![0u8; attr_size];
                 let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(attr_list_buf.as_mut_ptr() as *mut c_void);
                 if InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_size).is_err() {
+                    let _ = CloseHandle(h_pipe_pty_in);
+                    let _ = CloseHandle(h_pipe_pty_out);
                     let _ = ClosePseudoConsole(hpcon);
                     return Err(io::Error::last_os_error());
                 }
@@ -97,11 +95,13 @@ pub mod win {
                     attr_list,
                     0,
                     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                    Some(hpcon.0 as *const c_void),
+                    Some(&hpcon as *const HPCON as *const c_void),
                     mem::size_of::<HPCON>(),
                     None,
                     None,
                 ).is_err() {
+                    let _ = CloseHandle(h_pipe_pty_in);
+                    let _ = CloseHandle(h_pipe_pty_out);
                     DeleteProcThreadAttributeList(attr_list);
                     let _ = ClosePseudoConsole(hpcon);
                     return Err(io::Error::last_os_error());
@@ -128,6 +128,8 @@ pub mod win {
                 );
 
                 DeleteProcThreadAttributeList(attr_list);
+                let _ = CloseHandle(h_pipe_pty_in);
+                let _ = CloseHandle(h_pipe_pty_out);
 
                 if created.is_err() {
                     let _ = ClosePseudoConsole(hpcon);

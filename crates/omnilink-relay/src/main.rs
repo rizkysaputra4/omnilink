@@ -46,6 +46,8 @@ pub struct NotificationPayload {
     pub message: String,
     #[serde(default = "default_priority")]
     pub priority: String,
+    #[serde(default)]
+    pub term_id: Option<u32>,
     #[serde(default = "default_timestamp")]
     pub timestamp: u64,
 }

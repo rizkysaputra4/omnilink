@@ -12,12 +12,12 @@ mod tests {
 
     #[test]
     fn test_frames_encode_decode() {
-        let frame = Frame::Resize { cols: 120, rows: 40 };
+        let frame = Frame::Resize { term_id: 0, cols: 120, rows: 40 };
         let encoded = frame.encode();
         let decoded = Frame::decode(&encoded).expect("decode resize");
         assert_eq!(frame, decoded);
 
-        let input_frame = Frame::TerminalInput(b"ls -la\n".to_vec());
+        let input_frame = Frame::TerminalInput { term_id: 0, data: b"ls -la\n".to_vec() };
         let encoded = input_frame.encode();
         let decoded = Frame::decode(&encoded).expect("decode terminal input");
         assert_eq!(input_frame, decoded);

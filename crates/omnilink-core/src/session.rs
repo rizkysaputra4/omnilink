@@ -1,20 +1,53 @@
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
+use std::io::{Read, Write};
 use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use omnilink_proto::{verify_auth_proof, Frame, KeyPair, SessionCrypto};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{error, info, warn};
 
-#[cfg(windows)]
-use crate::conpty::win::PseudoConsole;
+pub struct TerminalSession {
+    pub term_id: u32,
+    pub shell: String,
+    pub master: Mutex<Box<dyn MasterPty + Send>>,
+    pub writer: Mutex<Box<dyn Write + Send>>,
+    pub history: Mutex<Vec<u8>>,
+    pub display_text: Mutex<String>,
+}
+
+impl TerminalSession {
+    pub fn write_input(&self, data: &[u8]) -> Result<()> {
+        let mut writer = self.writer.lock().map_err(|_| anyhow::anyhow!("Mutex poisoned"))?;
+        writer.write_all(data)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        let master = self.master.lock().map_err(|_| anyhow::anyhow!("Mutex poisoned"))?;
+        master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        Ok(())
+    }
+}
+
+pub type SharedTerminalRegistry = Arc<Mutex<HashMap<u32, Arc<TerminalSession>>>>;
+pub type SharedBroadcaster = Arc<Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>>;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct DeviceWhitelist {
@@ -69,6 +102,8 @@ pub struct TunnelHostSession {
     pub pin: String,
     pub shell: String,
     pub killswitch: Arc<AtomicBool>,
+    pub terminals: SharedTerminalRegistry,
+    pub broadcaster: SharedBroadcaster,
 }
 
 impl TunnelHostSession {
@@ -80,6 +115,28 @@ impl TunnelHostSession {
         pin: String,
         shell: String,
     ) -> (Self, Arc<AtomicBool>) {
+        Self::with_terminals(
+            relay_url,
+            room_id,
+            host_key,
+            auth_token,
+            pin,
+            shell,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(None)),
+        )
+    }
+
+    pub fn with_terminals(
+        relay_url: String,
+        room_id: String,
+        host_key: Arc<KeyPair>,
+        auth_token: [u8; 32],
+        pin: String,
+        shell: String,
+        terminals: SharedTerminalRegistry,
+        broadcaster: SharedBroadcaster,
+    ) -> (Self, Arc<AtomicBool>) {
         let killswitch = Arc::new(AtomicBool::new(false));
         let session = Self {
             relay_url,
@@ -89,6 +146,8 @@ impl TunnelHostSession {
             pin,
             shell,
             killswitch: killswitch.clone(),
+            terminals,
+            broadcaster,
         };
         (session, killswitch)
     }
@@ -203,36 +262,44 @@ impl TunnelHostSession {
 
         #[cfg(windows)]
         {
-            // 3. Spawn ConPTY process
-            info!("Spawning shell: {}", self.shell);
-            let pty = Arc::new(PseudoConsole::new(&self.shell, 80, 24)?);
-
             // Channel for encrypted outbound frames
-            let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+            *self.broadcaster.lock().unwrap() = Some(outbound_tx.clone());
 
-            // Background task: Read from ConPTY pipe -> Encrypt -> send via outbound_tx
-            let pty_read = pty.clone();
-            let killswitch_pty = self.killswitch.clone();
-            let outbound_tx_clone = outbound_tx.clone();
+            // Ensure default terminal (ID 0) is running
+            let _ = spawn_terminal_instance(
+                0,
+                self.shell.clone(),
+                &self.terminals,
+                &self.broadcaster,
+                &self.killswitch,
+            );
 
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                while !killswitch_pty.load(Ordering::Relaxed) {
-                    match pty_read.read_output(&mut buf) {
-                        Ok(n) if n > 0 => {
-                            let frame = Frame::TerminalOutput(buf[..n].to_vec());
-                            if outbound_tx_clone.send(frame.encode()).is_err() {
-                                break;
-                            }
+            // Replay all active terminals and their history to client
+            {
+                let term_map = self.terminals.lock().unwrap();
+                let mut term_ids: Vec<u32> = term_map.keys().copied().collect();
+                term_ids.sort();
+                for id in term_ids {
+                    if let Some(term) = term_map.get(&id) {
+                        if id > 0 {
+                            let spawn_frame = Frame::SpawnTerminal {
+                                term_id: id,
+                                shell: term.shell.clone(),
+                            };
+                            let _ = outbound_tx.send(spawn_frame.encode());
                         }
-                        Ok(_) => break,
-                        Err(e) => {
-                            warn!("ConPTY read error: {:?}", e);
-                            break;
+                        let history_bytes = term.history.lock().unwrap().clone();
+                        if !history_bytes.is_empty() {
+                            let out_frame = Frame::TerminalOutput {
+                                term_id: id,
+                                data: history_bytes,
+                            };
+                            let _ = outbound_tx.send(out_frame.encode());
                         }
                     }
                 }
-            });
+            }
 
             // WebSocket Send Task
             let mut send_task = tokio::spawn(async move {
@@ -252,8 +319,11 @@ impl TunnelHostSession {
             });
 
             // WebSocket Receive Task
-            let pty_write = pty.clone();
+            let terminals_recv = self.terminals.clone();
+            let broadcaster_recv = self.broadcaster.clone();
             let killswitch_recv = self.killswitch.clone();
+            let default_shell = self.shell.clone();
+            let outbound_tx_for_ping = outbound_tx.clone();
 
             let mut recv_task = tokio::spawn(async move {
                 while let Some(msg_res) = ws_receiver.next().await {
@@ -264,16 +334,34 @@ impl TunnelHostSession {
                         Ok(Message::Binary(ciphertext)) => {
                             match decryptor.decrypt(&ciphertext) {
                                 Ok(plaintext) => match Frame::decode(&plaintext) {
-                                    Ok(Frame::TerminalInput(data)) => {
-                                        let _ = pty_write.write_input(&data);
+                                    Ok(Frame::TerminalInput { term_id, data }) => {
+                                        info!("Received TerminalInput for [{}], len={}", term_id, data.len());
+                                        if let Some(term) = terminals_recv.lock().unwrap().get(&term_id) {
+                                            let _ = term.write_input(&data);
+                                        }
                                     }
-                                    Ok(Frame::Resize { cols, rows }) => {
-                                        info!("Resizing console to {}x{}", cols, rows);
-                                        let _ = pty_write.resize(cols as i16, rows as i16);
+                                    Ok(Frame::SpawnTerminal { term_id, shell }) => {
+                                        let chosen_shell = if shell.is_empty() { default_shell.clone() } else { shell };
+                                        let _ = spawn_terminal_instance(
+                                            term_id,
+                                            chosen_shell,
+                                            &terminals_recv,
+                                            &broadcaster_recv,
+                                            &killswitch_recv,
+                                        );
+                                    }
+                                    Ok(Frame::CloseTerminal { term_id }) => {
+                                        info!("Closing ConPTY terminal [{}]", term_id);
+                                        terminals_recv.lock().unwrap().remove(&term_id);
+                                    }
+                                    Ok(Frame::Resize { term_id, cols, rows }) => {
+                                        if let Some(term) = terminals_recv.lock().unwrap().get(&term_id) {
+                                            let _ = term.resize(cols, rows);
+                                        }
                                     }
                                     Ok(Frame::Ping(ts)) => {
                                         let pong = Frame::Pong(ts);
-                                        let _ = outbound_tx.send(pong.encode());
+                                        let _ = outbound_tx_for_ping.send(pong.encode());
                                     }
                                     Ok(Frame::Disconnect(reason)) => {
                                         info!("Client requested disconnect: {}", reason);
@@ -308,10 +396,124 @@ impl TunnelHostSession {
                 _ = &mut recv_task => {},
             };
 
-            info!("Session finished. Cleaning up ConPTY process.");
+            // Unbind outbound broadcaster when client disconnects, but keep persistent terminals alive!
+            *self.broadcaster.lock().unwrap() = None;
+            info!("Mobile client disconnected. Persistent terminals kept running for instant resumption.");
+
+            if self.killswitch.load(Ordering::Relaxed) {
+                info!("Killswitch active. Cleaning up all ConPTY processes.");
+                self.terminals.lock().unwrap().clear();
+            }
         }
 
         Ok(())
+    }
+}
+
+pub fn spawn_terminal_instance(
+    term_id: u32,
+    shell: String,
+    terminals: &SharedTerminalRegistry,
+    broadcaster: &SharedBroadcaster,
+    killswitch: &Arc<AtomicBool>,
+) -> Result<Arc<TerminalSession>> {
+    // If already exists, return existing!
+    if let Some(existing) = terminals.lock().unwrap().get(&term_id) {
+        return Ok(existing.clone());
+    }
+
+    info!("Spawning persistent ConPTY terminal [{}] with shell: {}", term_id, shell);
+    let pty_system = native_pty_system();
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+
+    let cmd = CommandBuilder::new(&shell);
+    let _child = pair.slave.spawn_command(cmd)?;
+
+    let mut reader = pair.master.try_clone_reader()?;
+    let writer = pair.master.take_writer()?;
+
+    let session = Arc::new(TerminalSession {
+        term_id,
+        shell: shell.clone(),
+        master: Mutex::new(pair.master),
+        writer: Mutex::new(writer),
+        history: Mutex::new(Vec::new()),
+        display_text: Mutex::new(String::new()),
+    });
+
+    terminals.lock().unwrap().insert(term_id, session.clone());
+
+    let session_reader = session.clone();
+    let broadcaster_clone = broadcaster.clone();
+    let killswitch_clone = killswitch.clone();
+
+    std::thread::spawn(move || {
+        info!("Persistent ConPTY [{}] reader thread started", term_id);
+        let mut buf = [0u8; 4096];
+        while !killswitch_clone.load(Ordering::Relaxed) {
+            match reader.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    let chunk = &buf[..n];
+                    {
+                        let mut h = session_reader.history.lock().unwrap();
+                        append_history(&mut h, chunk);
+                    }
+                    {
+                        let mut d = session_reader.display_text.lock().unwrap();
+                        append_display_text(&mut d, chunk);
+                    }
+                    if let Some(tx) = broadcaster_clone.lock().unwrap().as_ref() {
+                        let frame = Frame::TerminalOutput {
+                            term_id,
+                            data: chunk.to_vec(),
+                        };
+                        let _ = tx.send(frame.encode());
+                    }
+
+                    // Auto-respond to terminal queries from PTY processes (e.g. PowerShell PSReadLine cursor probe \x1b[6n)
+                    if chunk.windows(4).any(|w| w == b"\x1b[6n") {
+                        let _ = session_reader.write_input(b"\x1b[1;1R");
+                    }
+                    if chunk.windows(4).any(|w| w == b"\x1b[5n") {
+                        let _ = session_reader.write_input(b"\x1b[0n");
+                    }
+                }
+                Ok(_) => {
+                    info!("ConPTY [{}] EOF", term_id);
+                    break;
+                }
+                Err(e) => {
+                    warn!("ConPTY [{}] read error: {:?}", term_id, e);
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(session)
+}
+
+fn append_history(history: &mut Vec<u8>, chunk: &[u8]) {
+    const MAX_HISTORY: usize = 512 * 1024;
+    history.extend_from_slice(chunk);
+    if history.len() > MAX_HISTORY {
+        let excess = history.len() - MAX_HISTORY;
+        history.drain(0..excess);
+    }
+}
+
+fn append_display_text(display: &mut String, chunk: &[u8]) {
+    const MAX_CHARS: usize = 200_000;
+    let s = String::from_utf8_lossy(chunk);
+    display.push_str(&s);
+    if display.len() > MAX_CHARS {
+        let excess = display.len() - MAX_CHARS;
+        display.drain(0..excess);
     }
 }
 

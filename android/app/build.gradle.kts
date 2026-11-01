@@ -54,11 +54,11 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // CameraX & QR Code Scanner
+    // CameraX & QR Code Scanner (17.3.0 has Android 15 16KB page size ELF alignment)
     implementation("androidx.camera:camera-camera2:1.3.1")
     implementation("androidx.camera:camera-lifecycle:1.3.1")
     implementation("androidx.camera:camera-view:1.3.1")
-    implementation("com.google.mlkit:barcode-scanning:17.2.0")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
 
     // Network & WebSocket
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

@@ -24,6 +24,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -75,9 +76,68 @@ data class PairingData(
     val pin: String
 )
 
+class TerminalTab(
+    val id: Int,
+    var title: String,
+    val screen: TerminalScreen = TerminalScreen()
+) {
+    var revision by mutableStateOf(0)
+}
+
+data class PushNotificationMsg(
+    val channel: String?,
+    val title: String?,
+    val message: String?,
+    val priority: String?,
+    val term_id: Int?
+)
+
+fun showAgentNotification(context: Context, title: String, message: String, termId: Int) {
+    val channelId = "omnilink_agent_alerts"
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val channel = android.app.NotificationChannel(
+            channelId,
+            "OmniLink AI Agent Alerts",
+            android.app.NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Push alerts from AI agents running on host PC"
+            enableVibration(true)
+        }
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        manager.createNotificationChannel(channel)
+    }
+
+    val intent = Intent(context, MainActivity::class.java).apply {
+        action = Intent.ACTION_VIEW
+        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        putExtra("EXTRA_TARGET_TERM_ID", termId)
+    }
+
+    val pendingIntent = android.app.PendingIntent.getActivity(
+        context,
+        termId,
+        intent,
+        android.app.PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.app.PendingIntent.FLAG_IMMUTABLE else 0)
+    )
+
+    val notification = androidx.core.app.NotificationCompat.Builder(context, channelId)
+        .setSmallIcon(R.mipmap.ic_launcher)
+        .setContentTitle(title)
+        .setContentText(message)
+        .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(message))
+        .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+        .setAutoCancel(true)
+        .setContentIntent(pendingIntent)
+        .build()
+
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+    manager.notify(2000 + termId, notification)
+}
+
 class MainActivity : ComponentActivity() {
     private var tunnelClient: TunnelWebSocketClient? = null
     private val pendingDeepLink = mutableStateOf<String?>(null)
+    private val pendingTargetTerm = mutableStateOf<Int?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,6 +161,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun extractDeepLink(intent: Intent?) {
+        val targetTerm = intent?.getIntExtra("EXTRA_TARGET_TERM_ID", -1) ?: -1
+        if (targetTerm >= 0) {
+            pendingTargetTerm.value = targetTerm
+        }
         val uri = intent?.data ?: return
         val raw = uri.toString()
         pendingDeepLink.value = raw
@@ -119,8 +183,10 @@ class MainActivity : ComponentActivity() {
         var manualInput by remember { mutableStateOf("") }
         var showScanner by remember { mutableStateOf(false) }
 
-        val terminalScreen = remember { TerminalScreen() }
-        var currentInput by remember { mutableStateOf("") }
+        val tabs = remember { mutableStateListOf(TerminalTab(0, "PowerShell 1")) }
+        var activeTabId by remember { mutableStateOf(0) }
+        val activeTab = tabs.find { it.id == activeTabId } ?: tabs.firstOrNull() ?: TerminalTab(0, "PowerShell 1")
+        var liveInput by remember { mutableStateOf("") }
         val listState = rememberLazyListState()
 
         val vibrateSuccess = {
@@ -141,7 +207,7 @@ class MainActivity : ComponentActivity() {
             try {
                 vibrateSuccess()
                 tunnelClient?.disconnect()
-                terminalScreen.clear()
+                tabs.forEach { it.screen.clear() }
                 status = "Connecting to relay..."
 
                 // Persist pairing so the user NEVER needs to scan again
@@ -154,11 +220,22 @@ class MainActivity : ComponentActivity() {
                     roomId = data.room,
                     hostPubHex = data.host_pub,
                     authTokenHex = data.auth_token,
-                    onOutputReceived = { text ->
-                        terminalScreen.feed(text)
+                    onOutputReceived = { termId, text ->
+                        android.util.Log.i("OmniLink", "onOutputReceived termId=$termId, len=${text.length}")
+                        var tab = tabs.find { it.id == termId }
+                        if (tab == null) {
+                            val newTab = TerminalTab(termId, "Terminal ${termId + 1}")
+                            tabs.add(newTab)
+                            tab = newTab
+                        }
+                        tab.screen.feed(text)
+                        tab.revision++
                         coroutineScope.launch {
-                            if (terminalScreen.renderedLines.isNotEmpty()) {
-                                listState.animateScrollToItem(terminalScreen.renderedLines.size - 1)
+                            if (activeTabId == termId) {
+                                val count = tab.screen.renderedLines.size
+                                if (count > 0) {
+                                    listState.scrollToItem(count - 1)
+                                }
                             }
                         }
                     },
@@ -183,23 +260,95 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Auto-connect on app launch if already paired!
-        LaunchedEffect(Unit) {
-            val saved = prefs.getString("saved_pairing", null)
-            if (!saved.isNullOrBlank()) {
-                val data = Gson().fromJson(saved, PairingData::class.java)
-                if (data != null && data.room.isNotBlank()) {
-                    connectZeroTrust(data)
+        // Request Notification Permission on Android 13+ (API 33+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val notifPermissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestPermission()
+            ) { _ -> }
+            LaunchedEffect(Unit) {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                    notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
             }
         }
 
-        // Trigger auto-connect if launched via deep link
+        // Background Push Notification Subscriber (Listens for AI Agent alerts via Relay)
+        LaunchedEffect(savedPairingJson) {
+            val saved = savedPairingJson ?: return@LaunchedEffect
+            val data = try { Gson().fromJson(saved, PairingData::class.java) } catch (_: Exception) { null } ?: return@LaunchedEffect
+            if (data.room.isBlank()) return@LaunchedEffect
+
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val notifWsUrl = data.relay
+                    .replace("https://", "wss://")
+                    .replace("http://", "ws://") + "/v1/notifications/ws?channel=${data.room}"
+
+                val client = okhttp3.OkHttpClient.Builder()
+                    .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .pingInterval(15, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+
+                val request = okhttp3.Request.Builder().url(notifWsUrl).build()
+
+                client.newWebSocket(request, object : okhttp3.WebSocketListener() {
+                    override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                        try {
+                            val notif = Gson().fromJson(text, PushNotificationMsg::class.java)
+                            if (notif != null) {
+                                val termId = notif.term_id ?: 0
+                                showAgentNotification(
+                                    context = context,
+                                    title = notif.title ?: "OmniLink AI Alert",
+                                    message = notif.message ?: "",
+                                    termId = termId
+                                )
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("OmniLink", "Notification parse error: ${e.message}")
+                        }
+                    }
+                })
+            }
+        }
+
+        // Direct Deep Link / Notification Click to Target Terminal Session
+        LaunchedEffect(pendingTargetTerm.value) {
+            val target = pendingTargetTerm.value ?: return@LaunchedEffect
+            if (target >= 0) {
+                var tab = tabs.find { it.id == target }
+                if (tab == null) {
+                    val newTab = TerminalTab(target, "Terminal ${target + 1}")
+                    tabs.add(newTab)
+                }
+                activeTabId = target
+                pendingTargetTerm.value = null
+
+                if (!isConnected && tunnelClient == null) {
+                    val saved = prefs.getString("saved_pairing", null)
+                    if (!saved.isNullOrBlank()) {
+                        val data = Gson().fromJson(saved, PairingData::class.java)
+                        if (data != null && data.room.isNotBlank()) {
+                            connectZeroTrust(data)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Unified Connection Trigger (Handles Deep Link or Saved Pairing without race condition)
         LaunchedEffect(pendingDeepLink.value) {
             val deepLink = pendingDeepLink.value
             if (!deepLink.isNullOrBlank()) {
                 handleRawPayload(deepLink)
                 pendingDeepLink.value = null
+            } else if (!isConnected && tunnelClient == null) {
+                val saved = prefs.getString("saved_pairing", null)
+                if (!saved.isNullOrBlank()) {
+                    val data = Gson().fromJson(saved, PairingData::class.java)
+                    if (data != null && data.room.isNotBlank()) {
+                        connectZeroTrust(data)
+                    }
+                }
             }
         }
 
@@ -226,7 +375,28 @@ class MainActivity : ComponentActivity() {
         }
 
         val sendTerminalCommand = { cmd: String ->
-            tunnelClient?.sendInput(cmd)
+            tunnelClient?.sendInput(cmd, activeTabId)
+        }
+
+        val spawnTerminalTab = {
+            val nextId = (tabs.maxOfOrNull { it.id } ?: 0) + 1
+            val newTab = TerminalTab(nextId, "PowerShell ${nextId + 1}")
+            tabs.add(newTab)
+            activeTabId = nextId
+            tunnelClient?.spawnTerminal(nextId)
+        }
+
+        val closeTerminalTab = { id: Int ->
+            if (tabs.size > 1) {
+                tunnelClient?.closeTerminal(id)
+                val idx = tabs.indexOfFirst { it.id == id }
+                if (idx != -1) {
+                    tabs.removeAt(idx)
+                    if (activeTabId == id) {
+                        activeTabId = tabs.firstOrNull()?.id ?: 0
+                    }
+                }
+            }
         }
 
         val disconnectAll = {
@@ -260,7 +430,9 @@ class MainActivity : ComponentActivity() {
             topBar = {
                 Surface(
                     color = Color(0xFF10121A),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
                 ) {
                     Row(
                         modifier = Modifier
@@ -327,8 +499,89 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(padding)
+                        .imePadding()
                         .background(Color(0xFF090A0F))
                 ) {
+                    // Multi-Terminal Tab Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF141724))
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        tabs.forEach { tab ->
+                            val isSelected = tab.id == activeTabId
+                            Surface(
+                                onClick = { activeTabId = tab.id },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) Color(0xFF1E2438) else Color(0xFF0F111A),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isSelected) Color(0xFF00F2FE) else Color(0xFF262B3A)
+                                ),
+                                modifier = Modifier.padding(end = 6.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Terminal,
+                                        contentDescription = null,
+                                        tint = if (isSelected) Color(0xFF00F2FE) else Color(0xFF64748B),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = tab.title,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) Color.White else Color(0xFF94A3B8)
+                                    )
+                                    if (tabs.size > 1) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        IconButton(
+                                            onClick = { closeTerminalTab(tab.id) },
+                                            modifier = Modifier.size(16.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Close Tab",
+                                                tint = Color(0xFF94A3B8),
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Add New Terminal Tab Button [+]
+                        IconButton(
+                            onClick = { spawnTerminalTab() },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(Color(0xFF1A1F30), RoundedCornerShape(8.dp))
+                                .border(1.dp, Color(0xFF333B50), RoundedCornerShape(8.dp))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "New Terminal",
+                                tint = Color(0xFF00F2FE),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
+                    LaunchedEffect(activeTabId) {
+                        val count = activeTab.screen.renderedLines.size
+                        if (count > 0) {
+                            listState.scrollToItem(count - 1)
+                        }
+                    }
+
                     // Terminal Output Stream with Native ANSI Color & TUI Rendering
                     LazyColumn(
                         state = listState,
@@ -337,9 +590,12 @@ class MainActivity : ComponentActivity() {
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        items(terminalScreen.renderedLines) { annotatedLine ->
+                        // Observe revision to force recomposition when new lines arrive
+                        val _rev = activeTab.revision
+                        items(activeTab.screen.renderedLines) { annotatedLine ->
                             Text(
                                 text = annotatedLine,
+                                color = Color.White,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 12.5.sp,
                                 lineHeight = 16.sp
@@ -422,7 +678,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // Bottom Command Input Bar
+                    // Bottom Interactive Command Input Bar (Keystroke Streaming)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -439,15 +695,33 @@ class MainActivity : ComponentActivity() {
                         )
 
                         OutlinedTextField(
-                            value = currentInput,
-                            onValueChange = { currentInput = it },
+                            value = liveInput,
+                            onValueChange = { newVal ->
+                                if (newVal.length > liveInput.length) {
+                                    val delta = newVal.substring(liveInput.length)
+                                    tunnelClient?.sendInput(delta, activeTabId)
+                                    liveInput = newVal
+                                } else if (newVal.length < liveInput.length) {
+                                    val backspaces = liveInput.length - newVal.length
+                                    repeat(backspaces) {
+                                        tunnelClient?.sendInput("\u0008", activeTabId)
+                                    }
+                                    liveInput = newVal
+                                } else {
+                                    if (newVal != liveInput) {
+                                        repeat(liveInput.length) { tunnelClient?.sendInput("\u0008", activeTabId) }
+                                        tunnelClient?.sendInput(newVal, activeTabId)
+                                        liveInput = newVal
+                                    }
+                                }
+                            },
                             modifier = Modifier.weight(1f),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                             keyboardActions = KeyboardActions(onSend = {
-                                sendTerminalCommand(currentInput + "\r\n")
-                                currentInput = ""
+                                tunnelClient?.sendInput("\r", activeTabId)
+                                liveInput = ""
                             }),
-                            placeholder = { Text("Enter command...", color = Color(0xFF475569), fontSize = 13.sp) },
+                            placeholder = { Text("Interactive input (streams live)...", color = Color(0xFF475569), fontSize = 13.sp) },
                             singleLine = true,
                             shape = RoundedCornerShape(8.dp),
                             colors = OutlinedTextFieldDefaults.colors(
@@ -462,8 +736,8 @@ class MainActivity : ComponentActivity() {
 
                         IconButton(
                             onClick = {
-                                sendTerminalCommand(currentInput + "\r\n")
-                                currentInput = ""
+                                tunnelClient?.sendInput("\r", activeTabId)
+                                liveInput = ""
                             },
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))

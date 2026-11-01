@@ -79,7 +79,7 @@ async fn test_live_relay_e2e_with_auth_proof() -> Result<()> {
     let mut client_crypto = SessionCrypto::from_shared_secret(shared_client.as_bytes(), false);
 
     // 8. Test Encrypted Keystroke from Client -> Host
-    let input_frame = Frame::TerminalInput(b"whoami\r\n".to_vec());
+    let input_frame = Frame::TerminalInput { term_id: 0, data: b"whoami\r\n".to_vec() };
     let encrypted_input = client_crypto.encrypt(&input_frame.encode())?;
     client_ws.send(Message::Binary(encrypted_input)).await?;
 
@@ -89,10 +89,10 @@ async fn test_live_relay_e2e_with_auth_proof() -> Result<()> {
     };
     let host_decrypted = host_crypto.decrypt(&host_received_enc)?;
     let host_frame = Frame::decode(&host_decrypted)?;
-    assert_eq!(host_frame, Frame::TerminalInput(b"whoami\r\n".to_vec()));
+    assert_eq!(host_frame, Frame::TerminalInput { term_id: 0, data: b"whoami\r\n".to_vec() });
 
     // 9. Test Encrypted Output from Host -> Client
-    let output_frame = Frame::TerminalOutput(b"root\r\n".to_vec());
+    let output_frame = Frame::TerminalOutput { term_id: 0, data: b"root\r\n".to_vec() };
     let encrypted_output = host_crypto.encrypt(&output_frame.encode())?;
     host_ws.send(Message::Binary(encrypted_output)).await?;
 
@@ -102,7 +102,7 @@ async fn test_live_relay_e2e_with_auth_proof() -> Result<()> {
     };
     let client_decrypted = client_crypto.decrypt(&client_received_enc)?;
     let client_frame = Frame::decode(&client_decrypted)?;
-    assert_eq!(client_frame, Frame::TerminalOutput(b"root\r\n".to_vec()));
+    assert_eq!(client_frame, Frame::TerminalOutput { term_id: 0, data: b"root\r\n".to_vec() });
 
     println!("✅ Live E2EE Relay Test on wss://relay.findbeatradar.com passed with 100% success!");
     Ok(())

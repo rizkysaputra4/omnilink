@@ -2,6 +2,8 @@ package com.omnilink.android.network
 
 import android.os.Build
 import com.omnilink.android.crypto.CryptoEngine
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import okhttp3.*
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
@@ -15,7 +17,7 @@ class TunnelWebSocketClient(
     private val roomId: String,
     private val hostPubHex: String,
     private val authTokenHex: String,
-    private val onOutputReceived: (String) -> Unit,
+    private val onOutputReceived: (termId: Int, text: String) -> Unit,
     private val onStatusChanged: (String) -> Unit
 ) {
     private val client = OkHttpClient.Builder()
@@ -25,8 +27,11 @@ class TunnelWebSocketClient(
     private var webSocket: WebSocket? = null
     private val crypto = CryptoEngine()
     private var isPaired = false
+    private var isManualDisconnect = false
+    private val clientScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
 
     fun connect() {
+        isManualDisconnect = false
         onStatusChanged("Connecting to relay...")
         val base = relayUrl.trimEnd('/')
         val endpoint = if (base.endsWith("/v1/tunnel")) base else "$base/v1/tunnel"
@@ -35,10 +40,12 @@ class TunnelWebSocketClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
+                android.util.Log.i("OmniLink", "WebSocket onOpen")
                 onStatusChanged("Relay connected. Waiting for PC pairing...")
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
+                android.util.Log.i("OmniLink", "WebSocket onMessage text: $text")
                 if (text == "OMNILINK_PEER_CONNECTED") {
                     onStatusChanged("Host PC connected. Performing E2EE handshake & Proof...")
                     sendHandshakeInit(ws)
@@ -46,15 +53,36 @@ class TunnelWebSocketClient(
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
+                android.util.Log.i("OmniLink", "WebSocket onMessage bytes: size=${bytes.size}")
                 handleIncomingBytes(bytes.toByteArray())
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                onStatusChanged("Connection closed: $reason")
+                android.util.Log.i("OmniLink", "WebSocket onClosed: $code $reason")
+                isPaired = false
+                if (!isManualDisconnect) {
+                    onStatusChanged("Disconnected. Reconnecting...")
+                    clientScope.launch {
+                        delay(2000)
+                        if (!isManualDisconnect) connect()
+                    }
+                } else {
+                    onStatusChanged("Disconnected")
+                }
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                onStatusChanged("Connection error: ${t.message}")
+                android.util.Log.e("OmniLink", "WebSocket onFailure: ${t.message}", t)
+                isPaired = false
+                if (!isManualDisconnect) {
+                    onStatusChanged("Connection lost. Reconnecting...")
+                    clientScope.launch {
+                        delay(2000)
+                        if (!isManualDisconnect) connect()
+                    }
+                } else {
+                    onStatusChanged("Connection error: ${t.message}")
+                }
             }
         })
     }
@@ -96,22 +124,33 @@ class TunnelWebSocketClient(
                 System.arraycopy(raw, 5, hostPub, 0, 32)
                 crypto.completeHandshake(hostPub)
                 isPaired = true
+                android.util.Log.i("OmniLink", "Handshake completed! isPaired=true")
                 onStatusChanged("🔒 Connected & Encrypted (E2EE Active)")
             }
         } else {
             // Decrypt payload
             try {
                 val plaintext = crypto.decrypt(raw)
+                android.util.Log.i("OmniLink", "Decrypted frame, size=${plaintext.size}")
                 if (plaintext.size >= 5) {
                     val frameType = plaintext[0].toInt()
                     val len = ByteBuffer.wrap(plaintext, 1, 4).int
                     val payload = ByteArray(len)
                     System.arraycopy(plaintext, 5, payload, 0, len)
 
+                    android.util.Log.i("OmniLink", "FrameType=0x${Integer.toHexString(frameType)}, payloadLen=$len")
                     when (frameType) {
                         0x04 -> { // TerminalOutput
-                            val text = String(payload, Charsets.UTF_8)
-                            onOutputReceived(text)
+                            if (payload.size >= 4) {
+                                val termId = ByteBuffer.wrap(payload, 0, 4).int
+                                val text = String(payload, 4, payload.size - 4, Charsets.UTF_8)
+                                android.util.Log.i("OmniLink", "TerminalOutput for termId=$termId, len=${text.length}: ${text.take(40)}")
+                                onOutputReceived(termId, text)
+                            } else {
+                                val text = String(payload, Charsets.UTF_8)
+                                android.util.Log.i("OmniLink", "TerminalOutput legacy, len=${text.length}")
+                                onOutputReceived(0, text)
+                            }
                         }
                         0x06 -> { // Ping
                             val pong = encodeFrame(0x07, payload)
@@ -120,21 +159,49 @@ class TunnelWebSocketClient(
                     }
                 }
             } catch (e: Exception) {
+                android.util.Log.e("OmniLink", "Decryption error: ${e.message}", e)
                 onStatusChanged("Decryption error: ${e.message}")
             }
         }
     }
 
-    fun sendInput(input: String) {
-        if (!isPaired) return
-        val data = input.toByteArray(Charsets.UTF_8)
-        val frame = encodeFrame(0x03, data) // TerminalInput
+    fun sendInput(input: String, termId: Int = 0) {
+        if (!isPaired) {
+            android.util.Log.w("OmniLink", "sendInput called but !isPaired")
+            return
+        }
+        val textBytes = input.toByteArray(Charsets.UTF_8)
+        val buf = ByteBuffer.allocate(4 + textBytes.size)
+        buf.putInt(termId)
+        buf.put(textBytes)
+        val frame = encodeFrame(0x03, buf.array()) // TerminalInput
+        android.util.Log.i("OmniLink", "sendInput termId=$termId, chars=${textBytes.size}")
         sendEncrypted(frame)
     }
 
-    fun sendResize(cols: Int, rows: Int) {
+    fun spawnTerminal(termId: Int, shell: String = "") {
+        if (!isPaired) return
+        val sBytes = shell.toByteArray(Charsets.UTF_8)
+        val buf = ByteBuffer.allocate(4 + 2 + sBytes.size)
+        buf.putInt(termId)
+        buf.putShort(sBytes.size.toShort())
+        buf.put(sBytes)
+        val frame = encodeFrame(0x09, buf.array()) // SpawnTerminal
+        sendEncrypted(frame)
+    }
+
+    fun closeTerminal(termId: Int) {
         if (!isPaired) return
         val buf = ByteBuffer.allocate(4)
+        buf.putInt(termId)
+        val frame = encodeFrame(0x0A, buf.array()) // CloseTerminal
+        sendEncrypted(frame)
+    }
+
+    fun sendResize(cols: Int, rows: Int, termId: Int = 0) {
+        if (!isPaired) return
+        val buf = ByteBuffer.allocate(4 + 2 + 2)
+        buf.putInt(termId)
         buf.putShort(cols.toShort())
         buf.putShort(rows.toShort())
         val frame = encodeFrame(0x05, buf.array()) // Resize
@@ -160,6 +227,7 @@ class TunnelWebSocketClient(
     }
 
     fun disconnect() {
+        isManualDisconnect = true
         val frame = encodeFrame(0x08, "User closed session".toByteArray(Charsets.UTF_8))
         try {
             sendEncrypted(frame)

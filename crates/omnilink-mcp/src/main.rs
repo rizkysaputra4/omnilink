@@ -44,6 +44,16 @@ struct JsonRpcResponse {
     error: Option<Value>,
 }
 
+fn load_host_room_id() -> Option<String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    let path = std::path::PathBuf::from(home).join(".omnilink").join("host_config.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: Value = serde_json::from_str(&content).ok()?;
+    json.get("room_id").and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -123,14 +133,15 @@ async fn handle_request(
                 "tools": [
                     {
                         "name": "notify_user",
-                        "description": "Send a push notification or high-priority alert directly to the user's mobile device via OmniLink Push Hub. Works 24/7 without requiring an active terminal tunnel session.",
+                        "description": "Send a push notification or high-priority alert directly to the user's mobile device via OmniLink Push Hub. When tapped on phone, directly opens the associated terminal session.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
                                 "title": { "type": "string", "description": "Title of the alert" },
                                 "message": { "type": "string", "description": "Body content of the notification" },
                                 "priority": { "type": "string", "enum": ["low", "normal", "urgent"], "default": "normal" },
-                                "channel": { "type": "string", "description": "Optional custom channel/device token (defaults to configured channel)" }
+                                "term_id": { "type": "integer", "description": "Terminal session ID to open upon clicking notification (defaults to 0)" },
+                                "channel": { "type": "string", "description": "Optional custom channel/room ID (defaults to persistent room from ~/.omnilink/host_config.json)" }
                             },
                             "required": ["title", "message"]
                         }
@@ -157,16 +168,21 @@ async fn handle_request(
                     let title = arguments.get("title").and_then(|v| v.as_str()).unwrap_or("OmniLink Alert");
                     let message = arguments.get("message").and_then(|v| v.as_str()).unwrap_or("");
                     let priority = arguments.get("priority").and_then(|v| v.as_str()).unwrap_or("normal");
+                    let term_id = arguments.get("term_id").and_then(|v| v.as_u64()).map(|n| n as u32).unwrap_or(0);
+
+                    let host_room = load_host_room_id().unwrap_or_else(|| args.channel.clone());
                     let channel = arguments
                         .get("channel")
                         .and_then(|v| v.as_str())
-                        .unwrap_or(&args.channel);
+                        .filter(|c| *c != "default" && !c.is_empty())
+                        .unwrap_or(&host_room);
 
                     let payload = json!({
                         "channel": channel,
                         "title": title,
                         "message": message,
-                        "priority": priority
+                        "priority": priority,
+                        "term_id": term_id,
                     });
 
                     match client.post(&args.notify_url).json(&payload).send().await {
@@ -179,7 +195,7 @@ async fn handle_request(
                                     "content": [
                                         {
                                             "type": "text",
-                                            "text": format!("✅ Push notification successfully delivered to OmniLink Hub:\nTitle: {}\nMessage: {}\nPriority: {}\nChannel: {}\nHub Response: {}", title, message, priority, channel, body)
+                                            "text": format!("✅ Push notification successfully delivered to OmniLink Hub:\nTitle: {}\nMessage: {}\nPriority: {}\nTerm ID: {}\nChannel: {}\nHub Response: {}", title, message, priority, term_id, channel, body)
                                         }
                                     ]
                                 })),

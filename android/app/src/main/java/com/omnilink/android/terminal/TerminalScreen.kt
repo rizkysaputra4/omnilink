@@ -1,6 +1,8 @@
 package com.omnilink.android.terminal
 
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -35,14 +37,20 @@ class TerminalRow(val maxCols: Int = 120) {
         }
     }
 
+    fun clearFromStart(toCol: Int) {
+        val end = min(chars.size, toCol + 1)
+        for (i in 0 until end) {
+            chars[i] = StyledChar(' ', Color(0xFFE2E8F0), false)
+        }
+    }
+
     fun clearAll() {
         chars.clear()
     }
 
     fun toAnnotatedString(defaultColor: Color): AnnotatedString {
         if (chars.isEmpty()) return AnnotatedString("")
-        
-        // Trim trailing empty spaces for compact rendering
+
         var lastNonSpace = chars.size - 1
         while (lastNonSpace >= 0 && chars[lastNonSpace].char == ' ') {
             lastNonSpace--
@@ -56,13 +64,12 @@ class TerminalRow(val maxCols: Int = 120) {
                 val start = i
                 val curColor = sc.color
                 val curBold = sc.isBold
-                
-                // Group consecutive characters sharing style
+
                 while (i <= lastNonSpace && chars[i].color == curColor && chars[i].isBold == curBold) {
                     append(chars[i].char)
                     i++
                 }
-                
+
                 val end = i
                 addStyle(
                     SpanStyle(
@@ -82,11 +89,13 @@ class TerminalScreen(
     val defaultCols: Int = 100,
     val defaultColor: Color = Color(0xFF38BDF8)
 ) {
-    val renderedLines = mutableStateListOf<AnnotatedString>()
-    
+    var renderedLines by mutableStateOf<List<AnnotatedString>>(emptyList())
+        private set
+
     private val scrollback = ArrayList<AnnotatedString>()
     private val activeRows = ArrayList<TerminalRow>()
-    
+    private val pendingBuffer = StringBuilder()
+
     private var cursorRow = 0
     private var cursorCol = 0
     private var currentColor = defaultColor
@@ -101,7 +110,7 @@ class TerminalScreen(
         5 to Color(0xFFA855F7),  // Magenta
         6 to Color(0xFF06B6D4),  // Cyan
         7 to Color(0xFFE2E8F0),  // White
-        
+
         // Bright variants (90-97)
         8 to Color(0xFF94A3B8),  // Bright Black / Gray
         9 to Color(0xFFF87171),  // Bright Red
@@ -114,7 +123,15 @@ class TerminalScreen(
     )
 
     @Synchronized
-    fun feed(text: String) {
+    fun feed(rawText: String) {
+        val text = if (pendingBuffer.isNotEmpty()) {
+            val combined = pendingBuffer.toString() + rawText
+            pendingBuffer.clear()
+            combined
+        } else {
+            rawText
+        }
+
         var idx = 0
         val len = text.length
 
@@ -123,45 +140,67 @@ class TerminalScreen(
 
             when {
                 ch == '\u001b' -> {
-                    // Escape sequence
+                    val escapeStart = idx
                     idx++
-                    if (idx >= len) break
+                    if (idx >= len) {
+                        // Partial escape at end of stream: buffer for next chunk
+                        pendingBuffer.append(text.substring(escapeStart))
+                        break
+                    }
                     val next = text[idx]
                     when (next) {
                         '[' -> {
-                            // CSI sequence: parse parameters and command character
+                            // CSI sequence: parse parameters and command character in '@'..'~'
                             idx++
                             val sb = StringBuilder()
+                            var foundTerminator = false
                             while (idx < len) {
                                 val c = text[idx]
                                 if (c in '@'..'~') {
-                                    // Terminating character of CSI
                                     handleCsi(sb.toString(), c)
                                     idx++
+                                    foundTerminator = true
                                     break
                                 } else {
                                     sb.append(c)
                                     idx++
                                 }
                             }
+                            if (!foundTerminator) {
+                                // Incomplete CSI fragment: buffer for next chunk
+                                pendingBuffer.append(text.substring(escapeStart))
+                                break
+                            }
                         }
                         ']' -> {
                             // OSC sequence: skip until BEL (\u0007) or ST (\u001b\)
                             idx++
+                            var foundEnd = false
                             while (idx < len) {
                                 if (text[idx] == '\u0007') {
                                     idx++
+                                    foundEnd = true
                                     break
                                 } else if (text[idx] == '\u001b' && idx + 1 < len && text[idx + 1] == '\\') {
                                     idx += 2
+                                    foundEnd = true
                                     break
                                 }
                                 idx++
                             }
+                            if (!foundEnd) {
+                                pendingBuffer.append(text.substring(escapeStart))
+                                break
+                            }
                         }
                         '(', ')', '*', '+' -> {
                             // Character set switching: 2-byte sequence
-                            idx += 2
+                            if (idx + 1 < len) {
+                                idx += 2
+                            } else {
+                                pendingBuffer.append(text.substring(escapeStart))
+                                break
+                            }
                         }
                         else -> {
                             idx++
@@ -186,11 +225,10 @@ class TerminalScreen(
                     idx++
                 }
                 ch < ' ' -> {
-                    // Other non-printable control characters: ignore
+                    // Control chars like \u0007 (bell), etc.
                     idx++
                 }
                 else -> {
-                    // Printable character
                     ensureActiveRow(cursorRow)
                     activeRows[cursorRow].setChar(
                         cursorCol,
@@ -214,11 +252,9 @@ class TerminalScreen(
     private fun handleCsi(params: String, cmd: Char) {
         when (cmd) {
             'm' -> {
-                // SGR Color / Font formatting
                 handleSgr(params)
             }
             'H', 'f' -> {
-                // Cursor position: row;col (1-indexed)
                 val parts = params.split(';').mapNotNull { it.toIntOrNull() }
                 val targetRow = if (parts.isNotEmpty()) parts[0] - 1 else 0
                 val targetCol = if (parts.size > 1) parts[1] - 1 else 0
@@ -227,36 +263,34 @@ class TerminalScreen(
                 ensureActiveRow(cursorRow)
             }
             'A' -> {
-                // Cursor Up
-                val n = params.toIntOrNull() ?: 1
+                val n = params.filter { it.isDigit() }.toIntOrNull() ?: 1
                 cursorRow = max(0, cursorRow - n)
             }
             'B' -> {
-                // Cursor Down
-                val n = params.toIntOrNull() ?: 1
+                val n = params.filter { it.isDigit() }.toIntOrNull() ?: 1
                 cursorRow += n
                 ensureActiveRow(cursorRow)
             }
             'C' -> {
-                // Cursor Forward
-                val n = params.toIntOrNull() ?: 1
+                val n = params.filter { it.isDigit() }.toIntOrNull() ?: 1
                 cursorCol += n
             }
             'D' -> {
-                // Cursor Backward
-                val n = params.toIntOrNull() ?: 1
+                val n = params.filter { it.isDigit() }.toIntOrNull() ?: 1
                 cursorCol = max(0, cursorCol - n)
             }
             'G' -> {
-                // Cursor Horizontal Absolute (column)
-                val col = params.toIntOrNull() ?: 1
+                val col = params.filter { it.isDigit() }.toIntOrNull() ?: 1
                 cursorCol = max(0, col - 1)
             }
+            'd' -> {
+                val row = params.filter { it.isDigit() }.toIntOrNull() ?: 1
+                cursorRow = max(0, row - 1)
+                ensureActiveRow(cursorRow)
+            }
             'J' -> {
-                // Erase in Display
                 val p = params.filter { it.isDigit() }.toIntOrNull() ?: 0
                 if (p == 2 || p == 3) {
-                    // Clear Screen: commit non-empty active rows to scrollback
                     for (row in activeRows) {
                         val astr = row.toAnnotatedString(defaultColor)
                         if (astr.isNotEmpty()) {
@@ -272,18 +306,25 @@ class TerminalScreen(
                 }
             }
             'K' -> {
-                // Erase in Line
                 val p = params.filter { it.isDigit() }.toIntOrNull() ?: 0
                 if (cursorRow < activeRows.size) {
                     when (p) {
                         0 -> activeRows[cursorRow].clearToEnd(cursorCol)
+                        1 -> activeRows[cursorRow].clearFromStart(cursorCol)
                         2 -> activeRows[cursorRow].clearAll()
                     }
                 }
             }
-            else -> {
-                // Ignored CSI codes (modes, query reports, etc.)
+            'X' -> {
+                // Erase character without moving cursor
+                val n = params.filter { it.isDigit() }.toIntOrNull() ?: 1
+                if (cursorRow < activeRows.size) {
+                    for (i in 0 until n) {
+                        activeRows[cursorRow].setChar(cursorCol + i, StyledChar(' ', currentColor, false))
+                    }
+                }
             }
+            else -> {}
         }
     }
 
@@ -312,11 +353,9 @@ class TerminalScreen(
                     currentColor = ansiColorMap[code - 90 + 8] ?: defaultColor
                 }
                 38 -> {
-                    // Extended color
                     if (i + 1 < tokens.size) {
                         when (tokens[i + 1]) {
                             2 -> {
-                                // 24-bit RGB: 38;2;r;g;b
                                 if (i + 4 < tokens.size) {
                                     val r = tokens[i + 2].coerceIn(0, 255)
                                     val g = tokens[i + 3].coerceIn(0, 255)
@@ -326,7 +365,6 @@ class TerminalScreen(
                                 }
                             }
                             5 -> {
-                                // 256 colors: 38;5;n
                                 if (i + 2 < tokens.size) {
                                     val n = tokens[i + 2]
                                     currentColor = ansi256Color(n)
@@ -366,17 +404,15 @@ class TerminalScreen(
         for (row in activeRows) {
             result.add(row.toAnnotatedString(defaultColor))
         }
-
-        // Atomically sync with mutableStateListOf
-        renderedLines.clear()
-        renderedLines.addAll(result)
+        renderedLines = result
     }
 
     fun clear() {
+        pendingBuffer.clear()
         scrollback.clear()
         activeRows.clear()
         cursorRow = 0
         cursorCol = 0
-        renderedLines.clear()
+        renderedLines = emptyList()
     }
 }
